@@ -1156,6 +1156,125 @@ symbolic_bonus = min(0.8, 0.2 × |数字／LaTeX／希腊字母交集|)</pre>
 
 <p>至于"哪两句真的冲突、冲突的是什么、能不能改答案"，全部留给后面三道闸门（冲突硬门 → 盲验证 → 直接性门）。一句话总结这一层：<strong>它是一台高召回、可解释、可复现的候选筛选机，但不是裁判。</strong></p>
 
+<h2>附录 H · 这套方法算不算 RAG</h2>
+
+<p>整套流程的形态确实和 RAG 很像：都是"先取一个子集，再让模型只看这个子集来判断"。但把 RAG 拆成三个必要条件后会发现，本方案<strong>一条都不满足</strong>。差别不在细节，而在<strong>检索的目的被反转了</strong>。</p>
+
+<h3>H.1 RAG 的三个必要条件，本方案一条都不满足</h3>
+
+<ol>
+<li><strong>一个外部语料库</strong>——持久存在、可预先索引、规模远大于单次上下文。</li>
+<li><strong>一个查询</strong>——通常是用户问题，被编码后去语料库里找相似片段。</li>
+<li><strong>检索是为了增强生成</strong>（augmentation）——片段拼进提示词，生成器<em>据此写出</em>答案。</li>
+</ol>
+
+<table>
+  <tr><th style="width:130px">条件</th><th>RAG</th><th>本方案</th></tr>
+  <tr><td>外部语料库</td><td>有（文档、网页、知识库）</td><td><strong>没有</strong>。语料是三个模型<em>当场生成</em>的推理链，每题一份，跑完即弃</td></tr>
+  <tr><td>查询</td><td>用户问题，编码成向量</td><td><strong>没有 query</strong>。跨模型两两全对，是"穷举 + 配额"而不是"检索 top-k"</td></tr>
+  <tr><td>增强生成</td><td>片段喂给生成器写答案</td><td>候选对喂给<em>分诊器</em>判真伪；最终消费者只能在既有候选集内挑，默认不动</td></tr>
+</table>
+
+<p>所以严格地说，本方案<strong>不是 RAG</strong>。它借用了 RAG 的<em>形态</em>（切分 → 取子集 → 喂模型），但把检索的目标从 augmentation（增强生成）换成了 <strong>arbitration（仲裁分歧）</strong>。</p>
+
+<p>还有一个工程上很实在的区别：<strong>这里的检索不是扩展性机制</strong>。RAG 必须做 ANN 近似最近邻，因为要在一百万个 chunk 里找 top-k；而本方案的 N 只有十几到二十几个 span，<strong>全对全两两都算得完</strong>（实测十题合计只有 570 对通过打分）。"检索"在这里的作用是<em>把搜索空间压到程序能担保双方逐字出现在原文里的那几对</em>，是预算与聚焦机制，不是规模化机制。整个仓库里<strong>没有任何 embedding、向量库或索引</strong>——唯一的"向量"相关代码是 <code>work/utils.py</code> 里的 <code>max_position_embeddings</code>，那是模型配置项。</p>
+
+<h3>H.2 四处反向</h3>
+
+<div class="card amber">
+  <div class="lbl">反向一 · 语料是谁的</div>
+  <p>RAG 的知识来自<strong>外部</strong>；本方案的知识来自<strong>在场模型自己写下的内容</strong>。这直接决定了两者的知识上界（见 H.5）。</p>
+</div>
+
+<div class="card amber">
+  <div class="lbl">反向二 · 同一个分数，相反的含义</div>
+  <p>RAG 里相似度高 = 相关 = <strong>有用</strong>，值得放进提示词。<br>
+  本方案里词面重叠高 = "在说同一件事" = <strong>可疑</strong>，值得送去审。<br>
+  更微妙的是：<em>零分也不能当成"没问题"</em>。两个模型一个写 <code>buffer</code>、一个写 <code>缓冲液</code>，词面一个字不重合，程序<strong>不许</strong>据此判"这两家没冲突"，而要各挑 2 句信息量最大的兜底凑成 4 对交给模型否掉。代码注释原话：<em>Retrieval cannot safely declare that an absent lexical match means no semantic conflict.</em></p>
+</div>
+
+<div class="card amber">
+  <div class="lbl">反向三 · 结果去向完全不同</div>
+  <p>RAG：片段 → 提示词 → <strong>生成器写答案</strong>，片段直接支撑最终输出。<br>
+  本方案：候选对 → 分诊器 → <strong>只是一份提案</strong>，必须再同时通过 14 条硬条件才物化成结构化 Claim，然后过盲验证、过直接性门。<strong>检索结果本身没有任何证据效力。</strong></p>
+</div>
+
+<div class="card amber">
+  <div class="lbl">反向四 · 默认动作</div>
+  <p>RAG 没有"默认值"概念，检索到什么就以什么为依据。本方案的默认动作是<strong>什么都不做</strong>——保留 A-pool；任何一关不过就退回默认值。这是"少改但不能乱改"，RAG 里没有对应的设计。</p>
+</div>
+
+<h3>H.3 实测：全场最高分的那一对恰恰是矛盾的</h3>
+
+<p>把附录 G 的例子重跑一遍，评分最高的候选对是：</p>
+
+<table>
+  <tr><th style="width:66px">分数</th><th>左</th><th>右</th><th style="width:170px">共享内容词</th></tr>
+  <tr class="hl">
+    <td class="num">2.167</td>
+    <td><code>M0-S3</code> The activity of the enzyme <strong>rises</strong> with temperature.</td>
+    <td><code>M2-S3</code> The activity of enzyme E <strong>drops</strong> as the temperature <strong>rises</strong>.</td>
+    <td>activity, enzyme, <em>increase</em>, <em>rise</em>, temperature</td>
+  </tr>
+</table>
+
+<p>两句话意思完全相反，却拿到全场最高分。原因很朴素：<strong>互相矛盾的两句必然在讲同一件事、用同一批词</strong>，所以词面最像。更巧的是 <code>increase</code> / <code>rise</code> 这类<em>编码分歧本身</em>的方向词，也被算成了共有词，反过来给这一对加分。</p>
+
+<p>这正是 <code>_span_pair_score</code> 的 docstring 写着 <em>"never a contradiction verdict"（永不作为冲突裁决）</em>的原因。<strong>在 RAG 里"像"是好信号，在这里"像"只是线索——线索还要过庭。</strong></p>
+
+<h3>H.4 真正和 RAG 撞车的地方：召回天花板</h3>
+
+<p>RAG 有一个众所周知的痛点：<strong>gold 段落没被检索到，后面的生成器再强也救不回来。</strong>本方案有一模一样的天花板。</p>
+
+<table>
+  <caption>十题合计，逐层留存</caption>
+  <tr><th>层级</th><th style="width:80px">数量</th><th>备注</th></tr>
+  <tr><td>span 总数</td><td class="num">212</td><td>无损切分产出，全部入账供审计</td></tr>
+  <tr><td>可检索 span</td><td class="num">159</td><td>剔除 26 个直答字段 + 27 个过短片段</td></tr>
+  <tr><td>score &gt; 0 的跨模型候选对</td><td class="num">570</td><td>全对全两两打分的结果</td></tr>
+  <tr><td>名额平衡后</td><td class="num">192</td><td>被 <code>per_group</code> 砍掉 378 对（66%）</td></tr>
+  <tr><td>诊断阶段展示上限</td><td class="num">12</td><td>仅"诊断门开启"路径</td></tr>
+  <tr class="hl"><td><strong>通过冲突硬门</strong></td><td class="num">1</td><td>且落在唯一一道<em>本来就答对</em>的题上</td></tr>
+</table>
+
+<p>再看那 4 道错题，其中<strong>只有第 8、14 两题</strong>的正确答案本来就被某个模型说出来过（候选集可达）。第 9、12 两题的正确答案从未出现在任何一条链里——<em>无论召回率多高都修不好</em>，因为没有任何外部知识可以引入。所以召回的真实上界是 <strong>2/4</strong>。</p>
+
+<p>这不是实现的 bug，是<strong>这一类架构的结构性代价</strong>。也正因如此，光调门控没有用——得从"候选怎么提"上想办法。</p>
+
+<h3>H.5 一个更深的差异：知识上界完全不同</h3>
+
+<div class="card red">
+  <div class="lbl">两套系统的知识来源正交</div>
+  <p><strong>RAG 的知识上界</strong> = 外部语料库的内容。<br>
+  <strong>本方案的知识上界</strong> = 三个模型自己知道的内容的<em>并集</em>。</p>
+</div>
+
+<p>这条推论很重要，它一次性解释了三件事：</p>
+
+<ul>
+<li>为什么第 9、12 题修不好——正确答案不在任何模型的知识里，而这个方案<strong>没有引入新知识的通道</strong>。</li>
+<li>为什么选项级证据被锁死在候选集内（<code>_candidate_letters</code> = A-pool ∪ 各链答案）——这是"知识只能来自在场模型"这条原则的直接实现，不是随手加的保险。</li>
+<li>为什么 RAG 恰好能补上这个洞——外部语料是<strong>正交的第四方知识源</strong>。</li>
+</ul>
+
+<div class="rule">
+<strong>由此得到一个具体建议：</strong>把检索接到第 ⑤ 步的<strong>盲验证器</strong>上——让验证器可以查外部知识（教材、文献、数据表），而不只是凭模型记忆回答那个事实问题。这能同时松动两个瓶颈：知识上界不再受限于"在场模型的并集"，候选集也不再必须锁死在 A-pool ∪ 各链答案内。<br>
+<strong>但必须同时改两处</strong>：盲验证的提示词要引入外部证据、同时保留"看不到选项字母、看不到 A-pool"的盲性；<code>run_ledger</code> 的 <code>_candidate_letters</code> 过滤要放宽，否则即使查到了正确选项，池化时仍会被强制回退到 A-pool。
+</div>
+
+<h3>H.6 术语建议（写论文、答辩时用）</h3>
+
+<p>尽量避免直接说"我们用了 RAG"。这个说法会立即引出两个问题——<em>embedding 模型是哪个？语料库多大？</em>——而这两个前提本方案都不存在，解释成本很高，还容易被误判成"做了但没做好"。</p>
+
+<table>
+  <tr><th style="width:230px">用词</th><th>适用场合</th></tr>
+  <tr><td><code>constrained candidate retrieval</code></td><td>描述第 ② 步。强调"程序约束的候选检索"，与向量检索区分开</td></tr>
+  <tr><td><code>evidence-grounded conflict arbitration</code></td><td>描述整套方法。检索在这里是仲裁，不是增强</td></tr>
+  <tr><td>"RAG-shaped but inverted"</td><td>与 RAG 相关工作对话时用：形态相同，检索目的从 augmentation 反转为 falsification（证伪）</td></tr>
+</table>
+
+<p>如果要放进已有谱系，最接近的三个邻居是：<strong>multi-agent debate</strong>（多模型辩论，但靠自然语言说服，没有结构化证据账本）、<strong>self-consistency / majority voting</strong>（只处理答案，不处理理由）、以及 <strong>RAG</strong>（外部知识增强）。本方案的位置在 debate 与 RAG 之间：<em>把"分歧"当一等公民，并要求分歧必须由可回查的原文片段来裁决</em>。</p>
+
 <h2>附录 · 核对方法与数据来源</h2>
 <ul>
   <li><strong>逐题产物：</strong><code>server_work/qae_span_hybrid_focus10_v3_20261007.json</code>（10 条记录）。读取字段 <code>gold</code>、<code>stored_goa_answer</code>、<code>swarm_conflict.status</code>、<code>swarm_guard</code>、<code>qae_ledger</code>、<code>qae_pooler</code>、<code>qae_final_answer</code>、<code>swarm_spans</code>、<code>swarm_span_candidates</code>、<code>swarm_diagnosis</code>。</li>
