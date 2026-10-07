@@ -1319,6 +1319,121 @@ symbolic_bonus = min(0.8, 0.2 × |数字／LaTeX／希腊字母交集|)</pre>
 
 <p>测试状态：<code>pytest tests/</code> 现为 <strong>8 passed</strong>（新增 3 例：相邻包的同模型归属与半径上限、多 span 数值主张保留各自绝对 offset、跨包字段引用被拒绝）。</p>
 
+<h2>附录 I · 一个真实的完整案例：第 10 题的全程走查</h2>
+<p>前面附录 C 的例子是我构造的，附录 G 只走了一层。这里补一个<strong>完全真实</strong>的案例——<code>qae_span_hybrid_focus10_v3_20261007.json</code> 的第 10 题。它难得地走通了从切分到池化的全部阶段，而且触发的正是 <code>run_qae_pooling.py:617-624</code> 那段注释里记着的「MMLU 回归」修复分支。</p>
+
+<h3>题目与三条冻结推理链</h3>
+<p>题目问「下列哪项<strong>正确</strong>」（<em>All the following statements … are incorrect except</em>），正确答案是 <strong>D</strong>。选项 (A) 讲 Nsp14 是否为结构蛋白，(B) 讲亚基因组 RNA 转录是否连续，(C) 讲 +1 核糖体移码，(D) 讲亚基因组 RNA 的 leader 序列。</p>
+<table>
+<tr><th>链</th><th>原文长度</th><th>结论</th><th>答案</th></tr>
+<tr><td>M0</td><td>2 字符</td><td>输出被截断，只剩 <code>{</code></td><td>N/A</td></tr>
+<tr><td>M1</td><td>331 字符</td><td><em>Subgenomic RNA transcription is not a continuous process, but rather a discontinuous process…</em></td><td>B</td></tr>
+<tr><td>M2</td><td>885 字符</td><td>逐项分析 + JSON，含 <em>Option D is incorrect because…</em></td><td>D</td></tr>
+</table>
+<p><strong>A-pool = D，本来就正确。</strong>这道题的价值不在「修好了错题」，而在展示<strong>一道已答对的题如何被连续四次推向错误答案、又四次被程序拦下</strong>。</p>
+
+<h3>第①步 切分：12 个片段 → 8 个可用</h3>
+<table>
+<tr><th>span</th><th>offset</th><th>长度</th><th>kind</th><th>直答</th><th>可用</th></tr>
+<tr><td>M0-S1</td><td>[1:2]</td><td>1</td><td>sentence</td><td>否</td><td>✘ 太短</td></tr>
+<tr><td>M1-S1</td><td>[1:38]</td><td>37</td><td>sentence</td><td>是</td><td>✘ 直答字段</td></tr>
+<tr><td>M1-S2</td><td>[39:189]</td><td>150</td><td>sentence</td><td>否</td><td>✔</td></tr>
+<tr><td>M1-S3</td><td>[190:331]</td><td>141</td><td>symbolic</td><td>否</td><td>✔</td></tr>
+<tr><td>M2-S1</td><td>[0:82]</td><td>82</td><td>sentence</td><td>否</td><td>✔</td></tr>
+<tr><td>M2-S2</td><td>[83:151]</td><td>68</td><td>sentence</td><td>否</td><td>✔</td></tr>
+<tr><td>M2-S3</td><td>[153:245]</td><td>92</td><td>sentence</td><td>否</td><td>✔</td></tr>
+<tr><td>M2-S4</td><td>[246:367]</td><td>121</td><td>sentence</td><td>否</td><td>✔</td></tr>
+<tr><td>M2-S5</td><td>[368:486]</td><td>118</td><td>symbolic</td><td>否</td><td>✔</td></tr>
+<tr><td>M2-S6</td><td>[487:615]</td><td>128</td><td>sentence</td><td>否</td><td>✔</td></tr>
+<tr><td>M2-S7</td><td>[617:635]</td><td>18</td><td>sentence</td><td>是</td><td>✘ 直答字段</td></tr>
+<tr><td>M2-S8</td><td>[637:885]</td><td>248</td><td>symbolic</td><td>是</td><td>✘ 直答字段</td></tr>
+</table>
+<p>四个剔除原因各不相同：M0-S1 是长度 1 的残片；M1-S1、M2-S7、M2-S8 都是「我在报答案」的直答字段。<strong>M0 整条链只贡献一个 span，还被滤掉了</strong>——所以后面所有配对只在 M1 与 M2 之间发生，名义上的「三模型」实际只有两路。</p>
+
+<h3>第②步 配对：7 对，第一名比第二名高三倍</h3>
+<table>
+<tr><th>排名</th><th>候选对</th><th>分数</th></tr>
+<tr><td>1</td><td><strong>M1-S2 × M2-S4</strong></td><td><strong>4.669</strong></td></tr>
+<tr><td>2</td><td>M1-S3 × M2-S6</td><td>1.526</td></tr>
+<tr><td>3</td><td>M1-S2 × M2-S6</td><td>1.428</td></tr>
+<tr><td>4</td><td>M1-S3 × M2-S4</td><td>0.873</td></tr>
+<tr><td>5</td><td>M1-S2 × M2-S3</td><td>0.768</td></tr>
+<tr><td>6</td><td>M1-S3 × M2-S5</td><td>0.546</td></tr>
+<tr><td>7</td><td>M1-S3 × M2-S3</td><td>0.318</td></tr>
+</table>
+<p>参与配对的只有 M1、M2 → 只有 1 个模型对 → <code>per_group = max(2, 24 // 1) = 24</code>，7 对全部保留，一对都没被名额挤掉。</p>
+<p>第一名的分数可以逐项复算（与产物记录完全一致）：共享 9 个内容词 <code>{continuou, facilitat, proces, regulatory, rna, sequenc, shar, subgenomic, transcription}</code>，<code>lexical = 9 / sqrt(13×11) = 0.752618</code>，<code>rarity = 1/2+1/2+1/2+1/2+1/3+1/3+1/2+1/4+1/2 = 3.916667</code>，<code>symbolic_bonus = 0</code>，合计 <strong>4.669284</strong>。</p>
+
+<h3>第③步 冲突门：它被骗了</h3>
+<p>诊断判这对构成冲突，14 条硬条件逐条核对后全部通过，<strong>D1 正式成立</strong>，冲突类型 <code>definition</code>，待查事实为 <em>Is subgenomic RNA transcription a continuous or discontinuous process?</em>。</p>
+<p>但请看 <code>structured_claims</code> 里右侧那条的 <code>quote</code>：</p>
+<pre>M1-S2 → "Subgenomic RNA transcription is not a continuous process,
+          but rather a discontinuous process…"          direction = discontinuous
+
+M2-S4 → "(B) Subgenomic RNA transcription is indeed a continuous
+          process facilitated by shared transcription regulatory
+          sequences."                                    direction = continuous</pre>
+<p><strong>M2-S4 是选项 B 的原文复述。</strong>M2 自己选的答案是 D，它在论证 B 是错的，所以把 B 抄了一遍再驳。<strong>门给出的每一条判断都挑不出错——实体相同、属性相同、条件都是 none、方向互斥——唯独没有一层检查「这个片段到底是不是主张」。</strong></p>
+<p>这是方法的第一个缺口：<em>它可以验证「两个片段是否互相矛盾」，但无法区分「主张」与「引用」。</em></p>
+
+<h3>第④步 盲验证：这一步是干净的</h3>
+<table>
+<tr><th>验证模型</th><th>原始输出</th><th>归一化</th></tr>
+<tr><td>qwen</td><td>…initiated at specific internal promoters and occurs in discrete steps, making it a <strong>discontinuous</strong> process.</td><td>discontinuous</td></tr>
+<tr><td>mathstral</td><td>…is a <strong>discontinuous</strong> process…characteristic feature of coronaviruses.</td><td>discontinuous</td></tr>
+<tr><td>biomedical_llama</td><td>…in a <strong>discontinuous</strong> manner… <strong>This process is continuous</strong>, but the RdRp pauses…resulting in a <strong>discontinuous</strong> pattern</td><td><strong>UNKNOWN</strong></td></tr>
+</table>
+<p>归一化得 <code>"normalized_answer": "discontinuous"</code>、<code>"status": "STRONG"</code>。</p>
+<p>第三家那段话里同时出现 continuous 与 discontinuous，解析器取不出唯一答案，只能记 UNKNOWN。<strong>人读会知道它其实想说「不连续」（落点在 <em>discontinuous pattern</em>），但解析器不替它选——宁可记 UNKNOWN，也不合用一个字。</strong>这是这套方法在归一化上的纪律。</p>
+
+<h3>第⑤步 映射与直接性门：两次干预冲动</h3>
+<p>模型给出的候选映射（<code>qae_ledger["D1-E1"]["mapping_raw"]</code>）：</p>
+<pre>{ "supports": ["A"], "contradicts": ["B"], "reason": "brief direct link" }</pre>
+<p><strong>反驳 B 是对的</strong>（B 说转录连续，已被证伪）。<strong>但「支持 A」完全错误</strong>——选项 A 讲的是 Nsp14 是否为结构蛋白，与转录连续性毫无关系。</p>
+<p>直接性门的裁决（<code>swarm_guard</code>）：</p>
+<pre>{ "decision": "ADMIT", "directness": "INDIRECT",
+  "reason": "The settled answer 'discontinuous' aligns with M1-S2's claim but does
+             not directly resolve the conflicting definitions… regarding the
+             facilitation mechanism." }</pre>
+<p>ADMIT 说「这个冲突值得处理」，INDIRECT 说「但这条证据不足以决定选项」。程序随即<strong>清空刚写入的映射</strong>：</p>
+<pre>"supports": [], "contradicts": [],
+"mapping_reason": "brief direct link | blocked_by_directness_guard"</pre>
+<p><code>mapping_reason</code> 竖线后面的半句就是门控留下的签名。<strong>拦下 ① 生效。</strong></p>
+
+<h3>第⑥步 池化与兜底：三次跑偏，一次回退</h3>
+<table>
+<tr><th>阶段</th><th>模型输出</th><th>答案</th><th>问题</th></tr>
+<tr><td>clean</td><td><em>Option A is incorrect as Nsp14 is not a structural protein…</em></td><td><strong>A</strong></td><td>理由说 A 错，却选了 A</td></tr>
+<tr><td>rebuttal</td><td><em>…is a discontinuous process…as evidenced by D1-E1.</em></td><td><strong>B</strong></td><td>引用了正确证据，却指向错误选项</td></tr>
+<tr><td>pooler</td><td><em>Programmed +1 ribosomal frameshifting…making statement C correct…</em></td><td><strong>C</strong></td><td>无视证据，自己重新解了一遍题</td></tr>
+</table>
+<p>三个答案没有一个是 D。而可行集在调用池化器之前就已算好（<code>run_qae_pooling.py:593-595</code>）：</p>
+<pre>candidates = _candidate_letters(record) + [clean.answer, rebuttal.answer, hard_answer]
+           = ["D", "B", "A"]        # A-pool 的 D、M1 的 B、clean 的 A
+viable     = [x for x in candidates if not _contradicted(record, x)]  # 没人被排除</pre>
+<p>池化器给的是 <strong>C</strong>，<strong>C 不在这个集合里</strong>，于是触发兜底，最终答案 <strong>D</strong>，<code>qae_final_reason = "retain_A_pool_after_pooler_constraint_failure"</code>。<strong>拦下 ② 生效。</strong></p>
+
+<h3>这个案例真正说明的三件事</h3>
+<div class="card amber">
+<div class="lbl">一、程序约束比模型可靠</div>
+<p>中间三个模型阶段分别给出 A、B、C 三个错误答案，而程序的候选集合与回退规则把答案稳稳按回 D。<code>run_qae_pooling.py:617-624</code> 的注释直接写着这条规则是被一次真实的 MMLU 回归逼出来的：<em>「the pooler selected B, B was incorrectly excluded, and the code silently changed the answer to the first remaining candidate A」</em>。第 10 题触发的正是这个分支。</p>
+</div>
+<div class="card red">
+<div class="lbl">二、但如果门控放行，它会从正确改成错误</div>
+<p>推演（非实测，但机制明确）：若直接性门判 DIRECT，<code>supports=["A"]、contradicts=["B"]</code> 就会生效，B 被排除、A 被支持，可行集变成 <code>{D, A}</code>，池化器很可能选 A。<strong>净效果是把正确答案 D 改成错误答案 A。</strong>—— 也就是说，<strong>这一次是门控恰好挡住了唯一一次会出错的干预</strong>。门控在此处的作用不是「保守」，而是「纠正了证据映射本身的错误」。</p>
+</div>
+<div class="card teal">
+<div class="lbl">三、假冲突能通过全部 14 条硬条件</div>
+<p>M2-S4 是选项文本的引用而非主张，但 <code>same_entity / same_conditions / 方向互斥 / 锚点可回查</code> 全部成立。要堵住这个缺口，需要新增一层「主张归属」检查——例如要求每个 <code>structured_claims</code> 条目的引用不得与题干选项文本高度重合，或让诊断阶段显式回答「这句话是作者的判断，还是对他人观点的转述」。<strong>但这一步在当前实现中并不存在。</strong></p>
+</div>
+
+<h3>它同时暴露的两个测量问题</h3>
+<ul>
+<li><strong>「三模型」名不副实。</strong>M0 输出被截断，实际只有 M1、M2 两路参与。<code>initial_answers</code> 里 M0 是 <code>N/A</code>。第 8、9、17 题同样如此。报告「三路验证」时须核实实际参与路数。</li>
+<li><strong>STRONG 证据产生了 0 个可用映射。</strong>盲验证拿到 STRONG，但因为门控判 INDIRECT，最终 <code>supports</code> 与 <code>contradicts</code> 都是空数组。若统计口径只看「有没有 STRONG 证据」，会误以为这道题发生了证据驱动的修正；实际发生的是<strong>证据被完整弃用</strong>。这也是为什么 <code>a3000a3</code> 新增的 <code>changed_with_any_direct_evidence</code> 指标是必要的。</li>
+</ul>
+
+
 <h2>附录 · 核对方法与数据来源</h2>
 <ul>
   <li><strong>逐题产物：</strong><code>server_work/qae_span_hybrid_focus10_v3_20261007.json</code>（10 条记录）。读取字段 <code>gold</code>、<code>stored_goa_answer</code>、<code>swarm_conflict.status</code>、<code>swarm_guard</code>、<code>qae_ledger</code>、<code>qae_pooler</code>、<code>qae_final_answer</code>、<code>swarm_spans</code>、<code>swarm_span_candidates</code>、<code>swarm_diagnosis</code>。</li>
