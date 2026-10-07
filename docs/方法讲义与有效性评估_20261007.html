@@ -753,6 +753,68 @@ if start &lt; end:
   <p>每题检索到的候选对为 5–24 对（总计 192），但诊断环节<strong>每题只看前 12 对</strong>（<code>all_pairs[:12]</code>）。那几道 24 对的题，有<strong>一半候选从未被模型看过</strong>。</p>
 </div>
 
+<h2>附录 D · 候选检索的四层规则（容易误解的一步）</h2>
+
+<p>常见误解是"把推理链切成句子，然后句子之间互相匹配"。方向没错，但实现里有四层约束，且<strong>匹配的下游产物是候选清单，不是任何结论</strong>。</p>
+
+<h3>D.1 切出来的是"文本块"，不是"句子"</h3>
+<p>边界只有 <code>\n+</code> 与零宽句末标点两条（见附录 B），代码<strong>不做句法判断</strong>。因此一个 span 可以是一整段（idx=10 里最长 248 字符），也可以短到只有 1 个字符。</p>
+
+<h3>D.2 三层可检索门槛（<code>_span_is_retrievable</code>, line 455）</h3>
+<pre style="background:var(--bg2);border-radius:8px;padding:12px 16px;font-size:13px;overflow-x:auto"><code>if span.get("is_direct_answer"): return False              # ① 直答字段一律排除
+text = str(span.get("text", "")).strip()
+return len(text) >= 18 and len(_content_tokens(text)) >= 2 # ② ③ 长度与信息量</code></pre>
+<p>10 题实测：span 总数 <strong>212</strong> → 可检索 <strong>159</strong>，约 <strong>25% 在配对之前就被滤掉</strong>。</p>
+
+<h3>D.3 跨模型配对与名额分配（<code>_span_candidate_pairs</code>, line 483）</h3>
+<pre style="background:var(--bg2);border-radius:8px;padding:12px 16px;font-size:13px;overflow-x:auto"><code>per_group = max(2, limit // max(1, len(model_pairs)))   # limit = 24</code></pre>
+<table>
+  <tr><th style="width:150px">参与配对的模型数</th><th style="width:220px">模型对数</th><th>每个模型对的名额</th></tr>
+  <tr><td>3</td><td>3（M0-M1、M0-M2、M1-M2）</td><td><strong>8</strong></td></tr>
+  <tr><td>2</td><td>1</td><td>24</td></tr>
+</table>
+<p><strong>模型越多，每个模型对分到的名额越少。</strong>同一模型的 span 之间从不配对。</p>
+<p>打分函数 <code>_span_pair_score</code>（line 462）为三项相加：</p>
+<pre style="background:var(--bg2);border-radius:8px;padding:12px 16px;font-size:13px;overflow-x:auto"><code>score = |交集| / sqrt(|L| * |R|)          # 词面重叠，高召回
+      + sum(1 / df(token))                # 稀有词权重：HBr / ΔE / 单位 压过通用词
+      + min(0.8, 0.2 * |共享数字或符号|)    # 数字与公式加成</code></pre>
+
+<div class="card teal">
+  <div class="lbl">零重叠不会被判成"无冲突"</div>
+  <p>若某个模型对完全没有分数，程序会各取两边"信息密度最高"的 2 个 span 组成 4 对兜底候选，标记 <code>retrieval_basis = fallback_information_dense_cross_model_pair</code>、分数记 0。</p>
+  <blockquote style="margin:10px 0 0;padding:8px 16px;border-left:3px solid var(--line2);color:var(--ink2);font-size:13px">
+    Retrieval cannot safely declare that an absent lexical match means no semantic conflict.
+  </blockquote>
+  <p>实测这个分支<strong>一次都没触发</strong>：192 对候选全部是 <code>lexical_or_symbolic_span_overlap</code>。</p>
+</div>
+
+<p>另有一个前置开关：配对只在<strong>初始答案有分歧</strong>的题上运行（<code>_source_has_disagreement</code>：<code>initial_answers</code> 中存在 ≥2 个不同选项）。答案一致的题直接 <code>SKIPPED_NO_ANSWER_DISAGREEMENT</code>，一对都不配。</p>
+
+<h3>D.4 匹配不下结论</h3>
+<p><code>_span_pair_score</code> 的 docstring 原话：<strong>High-recall lexical/symbolic ranking, never a contradiction verdict.</strong></p>
+<p>分工是：匹配负责把搜索空间从"两条链的全部文本"缩到"程序能担保双方都逐字出现在原文里的那几对"；判定交给分诊模型，且模型<strong>只能在这几对里挑</strong>。</p>
+
+<h3>D.5 十题真实数据</h3>
+<table>
+  <tr><th style="width:70px">题号</th><th style="width:110px">span 总数</th><th style="width:110px">可检索</th><th style="width:150px">参与配对的模型数</th><th>候选对</th></tr>
+  <tr><td>2</td><td>34</td><td>24</td><td>3</td><td>24</td></tr>
+  <tr><td>7</td><td>15</td><td>10</td><td>3</td><td>5</td></tr>
+  <tr><td>8</td><td>19</td><td>13</td><td><strong>2</strong></td><td>24</td></tr>
+  <tr><td>9</td><td>17</td><td>8</td><td><strong>2</strong></td><td>12</td></tr>
+  <tr><td>10</td><td>12</td><td>8</td><td><strong>2</strong></td><td>7</td></tr>
+  <tr><td>12</td><td>25</td><td>20</td><td>3</td><td>24</td></tr>
+  <tr><td>13</td><td>23</td><td>17</td><td>3</td><td>24</td></tr>
+  <tr><td>14</td><td>17</td><td>15</td><td>3</td><td>24</td></tr>
+  <tr><td>16</td><td>22</td><td>21</td><td>3</td><td>24</td></tr>
+  <tr><td>17</td><td>28</td><td>23</td><td><strong>2</strong></td><td>24</td></tr>
+</table>
+
+<div class="card amber">
+  <div class="lbl">数据质量问题</div>
+  <p><strong>8、9、10、17 这四题实际只有 2 个模型参与配对</strong>——第三家的输出被截断或解析失败（<code>initial_answers</code> 中直接出现 <code>N/A</code>）。idx=10 的 M0 原文只有 2 个字符 <code>' {'</code>，切出 <code>M0-S1 = '{'</code>，tokens 为空，不可检索。</p>
+  <p>也就是说，"三模型投票"在这四题上实际上是二模型。评估时若按"三链"叙述结论，需要先确认每家是否真的产出了推理链。</p>
+</div>
+
 <h2>附录 · 核对方法与数据来源</h2>
 <ul>
   <li><strong>逐题产物：</strong><code>server_work/qae_span_hybrid_focus10_v3_20261007.json</code>（10 条记录）。读取字段 <code>gold</code>、<code>stored_goa_answer</code>、<code>swarm_conflict.status</code>、<code>swarm_guard</code>、<code>qae_ledger</code>、<code>qae_pooler</code>、<code>qae_final_answer</code>、<code>swarm_spans</code>、<code>swarm_span_candidates</code>、<code>swarm_diagnosis</code>。</li>
@@ -760,6 +822,7 @@ if start &lt; end:
   <li><strong>正确率：</strong>逐题比较 <code>stored_goa_answer</code> 与 <code>gold</code>，得 6/10；比较 <code>qae_final_answer</code> 与 <code>gold</code>，得 6/10。</li>
   <li><strong>可达性统计：</strong>候选集定义为 <code>stored_goa_answer</code> 去重后并入 <code>initial_answers.values()</code>（即 <code>_candidate_letters</code> 的取值域）。<code>gold</code> 落在候选集内的题号 = 2, 7, 8, 10, 13, 14, 16, 17（8 题）；不在的 = 9, 12（2 题）。错题中的可达题 = 8, 14，故召回上界为 2/4。</li>
   <li><strong>候选对展示上限：</strong><code>run_qae_localized.py</code> 的 <code>run_diagnose</code> 中 <code>shown_pairs = all_pairs[:12]</code>，即每题最多 12 对进入诊断提示词。</li>
+  <li><strong>span 可用性统计（附录 D）：</strong>按 <code>_span_is_retrievable</code> 的门槛（非 <code>is_direct_answer</code>、<code>len(text.strip()) &gt;= 18</code>、<code>len(content_tokens) &gt;= 2</code>）重算各记录 <code>swarm_spans.spans</code>，得 span 总数 212、可检索 159。参与配对的模型数由"有可用 span 的模型"去重得到，其中 8、9、10、17 为 2。192 对候选的 <code>retrieval_basis</code> 全部为 <code>lexical_or_symbolic_span_overlap</code>，无兜底分支。</li>
   <li><strong>代码状态：</strong><code>run_qae_localized.py</code> 共 1981 行；阶段入口见 <code>--stage</code> 的 choices；<code>--diagnosis-gate</code> 定义在第 1956 行；诊断状态机 <code>_diagnosis_state</code> 在第 620 行。</li>
   <li><strong>版本状态：</strong>git 提交 <code>35daf30 feat: add diagnosis-gated span verification</code>；<code>tests/test_span_diagnosis.py</code> 含 3 个用例。</li>
   <li><strong>注意：</strong>10 题样本来自"初始答案确有分歧"的 GPQA 子集，属有偏难例集，<strong>不能用于估计整体准确率</strong>。"212 / 192 / 1 / 2 / 1 / 0 / 0" 这组数字见 <code>SPAN_HYBRID_TECHNICAL.md</code> §8，已与产物逐项核对一致。</li>
