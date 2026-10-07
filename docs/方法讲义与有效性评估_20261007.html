@@ -696,7 +696,7 @@ if start &lt; end:
   <tr><td><strong>① span 切分</strong></td><td>程序</td><td>M0 的那句切为 <code>M0-S5</code>，M2 的那句切为 <code>M2-S7</code>，各记 <code>start:end</code>。两句均 ≥18 字符、非 <code>is_direct_answer</code> → 有资格当候选。</td></tr>
   <tr><td><strong>② 候选检索</strong></td><td>程序</td><td>两句词面重叠于 {温度, 活性}，跨模型 → 配成一对 P3。本题共留 11 对（上限 24）。<strong>此时模型什么都还没做，候选空间完全由程序给定。</strong></td></tr>
   <tr><td><strong>③ 分诊</strong></td><td>模型</td><td>看到 11 对候选 + 完整题目（含选项文字），但<strong>看不到 A-pool 与各链答案</strong>。输出 <code>problem_type=causal_mechanism</code>、<code>diagnosis_type=fact_or_concept_error</code>、<code>verification_eligible=true</code>、<code>span_refs=[M0-S5, M2-S7]</code>，不选答案。</td></tr>
-  <tr><td><strong>④ 冲突硬门</strong></td><td>程序</td><td>16 个与条件同时成立 → 承认冲突 <strong>D1</strong>；此时才第一次把这两句物化为结构化 Claim（实体／属性／条件／方向）。</td></tr>
+  <tr><td><strong>④ 冲突硬门</strong></td><td>程序</td><td><strong>14 个顶层与条件</strong>同时成立（<code>run_qae_localized.py:1088-1103</code>）→ 承认冲突 <strong>D1</strong>；此时才第一次把这两句物化为结构化 Claim（实体／属性／条件／方向）。其中"冲突依据"这一条现有两个并列分支：方向互斥（<code>opposite_direction</code>）或数值终值不一致（<code>numeric_terminal_value_mismatch</code>），结果记入 <code>conflict_basis</code>。</td></tr>
   <tr><td><strong>⑤ 盲验证</strong></td><td>模型×3</td><td>待查事实问题：「酶 E 的温度超过最适温度后继续升温，催化活性是升高还是降低？」题干已去选项。三答均为「降低」→ 归一化 <strong>STRONG</strong>。</td></tr>
   <tr><td><strong>⑥ 直接性门 + 池化</strong></td><td>程序+模型</td><td>门控判 <code>ADMIT</code>／<code>DIRECT</code>（该事实能直接区分两条主张）→ 映射得 <code>contradicts=[A]</code>、<code>supports=[C]</code> → 可行集 {B, C} → 池化器选 C 并引用 <code>D1-E1</code>，而 <code>D1-E1.supports</code> 确有 C → 放行。<strong>最终 = C，修正成功。</strong></td></tr>
 </table>
@@ -815,6 +815,54 @@ return len(text) >= 18 and len(_content_tokens(text)) >= 2 # ② ③ 长度与�
   <p>也就是说，"三模型投票"在这四题上实际上是二模型。评估时若按"三链"叙述结论，需要先确认每家是否真的产出了推理链。</p>
 </div>
 
+<h2>附录 E · 上游新增的两处改动及其影响</h2>
+
+<p>本附录记录 <code>24f59ff</code>、<code>a3000a3</code> 两次提交之后，前述结论中需要限定或更新的部分。</p>
+
+<h3>E.1 两处改动做了什么</h3>
+<table>
+  <tr><th style="width:110px">提交</th><th style="width:150px">主题</th><th>实际改动</th></tr>
+  <tr>
+    <td><code>24f59ff</code></td>
+    <td>admit grounded numeric conflicts safely</td>
+    <td>① 冲突门新增"数值终值不一致"分支：当 <code>route == "numeric"</code> 且两个被锚定的终值小数不同时也承认冲突，结果记入新字段 <code>conflict_basis</code>；② <code>run_solve</code> 与 <code>run_pool</code> 在 diagnosis-gated 路线下、且记录内没有任何 <code>HARD</code>／<code>STRONG</code> 证据时<strong>短路</strong>，直接保留 A-pool，跳过干净重解与池化两次模型调用；③ 新增 <code>verify_needed</code> 阶段，运行脚本据此在无待验 D1 时跳过整个 verify 循环。</td>
+  </tr>
+  <tr>
+    <td><code>a3000a3</code></td>
+    <td>recognize LaTeX numeric approximations</td>
+    <td>① <code>_terminal_numeric_result</code> 增加 <code>\approx</code>、<code>\simeq</code> 的归一化；② <code>_localized_summary</code> 新增 <code>changed_with_programmatic_hard_evidence</code> 与 <code>changed_with_any_direct_evidence</code>，把"程序 HARD 驱动的改动"与"被授权的直接证据驱动的改动"分开统计。</td>
+  </tr>
+</table>
+
+<h3>E.2 需要更新的结论</h3>
+
+<div class="card amber">
+  <div class="lbl">① 冲突硬门的条件数：16 → 14</div>
+  <p>原实现把"左方向非 unknown""右方向非 unknown""方向互斥"写成三条独立与条件；改动后它们合并为一个 <code>direction_conflict</code> 因子，并与新增的 <code>numeric_anchor_conflict</code> 取并。因此顶层与条件由 16 条变为 <strong>14 条</strong>（<code>run_qae_localized.py:1088-1103</code>）。附录 C 已同步。</p>
+</div>
+
+<div class="card blue">
+  <div class="lbl">② 新增了一条此前不存在的通路</div>
+  <p>数值类题目现在可以凭"两个被锚定的终值小数不同"承认冲突，不再必须依赖反向表述（<code>opposite_direction</code>）。这对 GPQA 的数值题有意义，但<strong>不改变"192 → 1"这个塌方</strong>——那 10 题均为概念题，<code>conflict_basis</code> 只可能取 <code>opposite_direction</code>，新分支在这批样本上无从触发。</p>
+</div>
+
+<div class="card red">
+  <div class="lbl">③ 关于"池化器自由解题"的破坏风险，结论需要限定</div>
+  <p>新代码在"记录内没有任何 <code>HARD</code>／<code>STRONG</code> 证据"时，会在调用池化器<strong>之前</strong>直接返回 A-pool（原因码 <code>retain_A_pool_no_valid_ledger_evidence</code>），干净重解与池化两次调用都被跳过。</p>
+  <p>但要留意：<strong>idx=10 这类情形不会触发该短路。</strong>门控虽然清空了 <code>supports</code>／<code>contradicts</code>，却没有改动 <code>qae_ledger["D1-E1"]["status"]</code>——它仍是 <code>STRONG</code>；而 <code>_all_evidence</code>（<code>run_qae_pooling.py:299</code>）只按 <code>status</code> 过滤，所以短路条件为假，池化路径与旧版一致，仍由 <code>choice not in viable</code> 那条规则兜底。</p>
+  <p><strong>准确的说法是：这次改动消除了噪声输出与两次无效模型调用，但没有改变最终答案，也没有新增安全网。</strong>"池化器与自身引用证据无关地重新解题"这一行为特征依然存在，只是其输出在无证据的情形下不再被生成。</p>
+</div>
+
+<div class="card teal">
+  <div class="lbl">④ 附录 B、D 继续有效</div>
+  <p>两次改动都<strong>未触及</strong> span 切分与候选检索（<code>_trim_span_bounds</code> 374-424、<code>_span_is_retrievable</code> 455、<code>_span_pair_score</code> 462、<code>_span_candidate_pairs</code> 483），行号亦未偏移，可直接跳转核对。</p>
+</div>
+
+<div class="card teal">
+  <div class="lbl">⑤ 补上了此前缺失的指标</div>
+  <p><code>changed_with_programmatic_hard_evidence</code> 与 <code>changed_with_any_direct_evidence</code> 把两类改动来源分开，正是此前指出的"无法区分修正来自程序硬约束还是证据授权"这一测量缺口。建议后续实验同时报告这两个数与 <code>retain_A_pool_*</code> 各原因码的计数分布——它们能直接回答"改动是被授权发生的，还是被兜底拦截的"。</p>
+</div>
+
 <h2>附录 · 核对方法与数据来源</h2>
 <ul>
   <li><strong>逐题产物：</strong><code>server_work/qae_span_hybrid_focus10_v3_20261007.json</code>（10 条记录）。读取字段 <code>gold</code>、<code>stored_goa_answer</code>、<code>swarm_conflict.status</code>、<code>swarm_guard</code>、<code>qae_ledger</code>、<code>qae_pooler</code>、<code>qae_final_answer</code>、<code>swarm_spans</code>、<code>swarm_span_candidates</code>、<code>swarm_diagnosis</code>。</li>
@@ -823,8 +871,9 @@ return len(text) >= 18 and len(_content_tokens(text)) >= 2 # ② ③ 长度与�
   <li><strong>可达性统计：</strong>候选集定义为 <code>stored_goa_answer</code> 去重后并入 <code>initial_answers.values()</code>（即 <code>_candidate_letters</code> 的取值域）。<code>gold</code> 落在候选集内的题号 = 2, 7, 8, 10, 13, 14, 16, 17（8 题）；不在的 = 9, 12（2 题）。错题中的可达题 = 8, 14，故召回上界为 2/4。</li>
   <li><strong>候选对展示上限：</strong><code>run_qae_localized.py</code> 的 <code>run_diagnose</code> 中 <code>shown_pairs = all_pairs[:12]</code>，即每题最多 12 对进入诊断提示词。</li>
   <li><strong>span 可用性统计（附录 D）：</strong>按 <code>_span_is_retrievable</code> 的门槛（非 <code>is_direct_answer</code>、<code>len(text.strip()) &gt;= 18</code>、<code>len(content_tokens) &gt;= 2</code>）重算各记录 <code>swarm_spans.spans</code>，得 span 总数 212、可检索 159。参与配对的模型数由"有可用 span 的模型"去重得到，其中 8、9、10、17 为 2。192 对候选的 <code>retrieval_basis</code> 全部为 <code>lexical_or_symbolic_span_overlap</code>，无兜底分支。</li>
-  <li><strong>代码状态：</strong><code>run_qae_localized.py</code> 共 1981 行；阶段入口见 <code>--stage</code> 的 choices；<code>--diagnosis-gate</code> 定义在第 1956 行；诊断状态机 <code>_diagnosis_state</code> 在第 620 行。</li>
-  <li><strong>版本状态：</strong>git 提交 <code>35daf30 feat: add diagnosis-gated span verification</code>；<code>tests/test_span_diagnosis.py</code> 含 3 个用例。</li>
+  <li><strong>代码状态：</strong><code>run_qae_localized.py</code> 共 <strong>2062 行</strong>（截至 <code>a3000a3</code>）；阶段入口见 <code>--stage</code> 的 choices；<code>--diagnosis-gate</code> 定义在第 2034 行；诊断状态机 <code>_diagnosis_state</code> 在第 630 行；冲突硬门 <code>valid</code> 块在第 1088-1103 行；<code>_span_directions_incompatible</code> 在第 1291 行，新增的 <code>_terminal_numeric_result</code> / <code>_numeric_anchor_results_incompatible</code> 在第 1322 / 1347 行。</li>
+  <li><strong>行号基准：</strong>附录 B 与附录 D 引用的 374-424 / 455 / 462 / 483 四处位置在 <code>24f59ff</code>、<code>a3000a3</code> 两次改动后<strong>未发生偏移</strong>，仍可直接跳转核对。</li>
+  <li><strong>版本状态：</strong>git 提交 <code>35daf30 feat: add diagnosis-gated span verification</code>；<code>tests/test_span_diagnosis.py</code> 含 3 个用例。后续新增 <code>24f59ff fix: admit grounded numeric conflicts safely</code>、<code>a3000a3 fix: recognize LaTeX numeric approximations</code>（见附录 E）。</li>
   <li><strong>注意：</strong>10 题样本来自"初始答案确有分歧"的 GPQA 子集，属有偏难例集，<strong>不能用于估计整体准确率</strong>。"212 / 192 / 1 / 2 / 1 / 0 / 0" 这组数字见 <code>SPAN_HYBRID_TECHNICAL.md</code> §8，已与产物逐项核对一致。</li>
 </ul>
 
