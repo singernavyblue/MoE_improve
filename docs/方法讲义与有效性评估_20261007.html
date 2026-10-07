@@ -863,6 +863,12 @@ return len(text) >= 18 and len(_content_tokens(text)) >= 2 # ② ③ 长度与�
   <p><code>changed_with_programmatic_hard_evidence</code> 与 <code>changed_with_any_direct_evidence</code> 把两类改动来源分开，正是此前指出的"无法区分修正来自程序硬约束还是证据授权"这一测量缺口。建议后续实验同时报告这两个数与 <code>retain_A_pool_*</code> 各原因码的计数分布——它们能直接回答"改动是被授权发生的，还是被兜底拦截的"。</p>
 </div>
 
+<div class="card red">
+  <div class="lbl">⑥ 后续提交 <code>18f6da1</code> 又把门收紧了（详见附录 H.7）</div>
+  <p><code>18f6da1 feat: support bounded multi-span conflict claims</code> 引入了"相邻上下文包"，同时给冲突门加了一条新硬条件：<code>field_grounded</code> 现在要求 <code>results_grounded</code> 也成立，即<strong>两侧的 result 字段都必须是对应包内某个 span 的精确连续子串</strong>；方向冲突还额外要求 <code>direction_results_grounded</code>。</p>
+  <p>顶层与条件数仍为 <strong>14 条</strong>（<code>run_qae_localized.py:1191-1206</code>），但其中 <code>direction_conflict</code> 与 <code>field_grounded</code> 两项变得<strong>严格更难满足</strong>。而 v3 产物里的 D1 早于这次改动，其 <code>swarm_conflict</code> <strong>不含任何 <code>*_ref</code> 字段</strong>、<code>structured_claims</code> 也<strong>没有 result 锚点</strong>——因此该产物不能再作为当前代码的行为证据。</p>
+</div>
+
 <h2>附录 F · 为什么这样切分，以及为什么不能直接拿去匹配</h2>
 
 <p>本附录回答两个连在一起的问题：切分为什么只认两条边界、<strong>不做任何句法判断</strong>；以及切出来的片段为什么不能直接拿去配对，而必须经过三层门槛与三层配额。所有数字均由本机复算 <code>qae_span_hybrid_focus10_v3_20261007.json</code> 得出。</p>
@@ -1274,6 +1280,44 @@ symbolic_bonus = min(0.8, 0.2 × |数字／LaTeX／希腊字母交集|)</pre>
 </table>
 
 <p>如果要放进已有谱系，最接近的三个邻居是：<strong>multi-agent debate</strong>（多模型辩论，但靠自然语言说服，没有结构化证据账本）、<strong>self-consistency / majority voting</strong>（只处理答案，不处理理由）、以及 <strong>RAG</strong>（外部知识增强）。本方案的位置在 debate 与 RAG 之间：<em>把"分歧"当一等公民，并要求分歧必须由可回查的原文片段来裁决</em>。</p>
+
+<h3>H.7 一个反向的例外：上游刚采纳了 RAG 的相邻窗口技巧</h3>
+
+<p>整理这份附录的过程中，仓库新增了 <code>18f6da1 feat: support bounded multi-span conflict claims</code>。它做的事恰好是 RAG 里一个标准技巧，必须单独说明——因为这让"像不像 RAG"的答案变得更微妙：<strong>形态上更近了，目标上仍然相反。</strong></p>
+
+<p>这个技巧在 RAG 里有名字：<strong>sentence-window retrieval / small-to-big（小粒度检索、大窗口供给）</strong>。先用小粒度单元（句子）做检索以保证精准，命中后再把它周围的邻居一并交给模型，以保证上下文完整。它要解决的经典困境正是本方案遇到的那个——<em>实体定义在上一句、计算结果在下一句，只给一句话，模型根本没法引用定义</em>。</p>
+
+<p>改动实现（<code>_span_context_packet</code>）：</p>
+
+<ul>
+<li>核心候选<strong>仍然是 D0 选中的那两条跨模型 span</strong>，候选空间没有扩大；</li>
+<li>每一侧额外构造一个<strong>同一来源模型</strong>的固定相邻包，默认核心 span 加前后各一条（<code>--span-context-radius=1</code>，程序内部上限 2）；</li>
+<li>entity / attribute / condition / result 四个字段各自都须输出 <code>*_ref + *_span</code>；</li>
+<li><strong>左字段只能引用左包、右字段只能引用右包</strong>，跨包、跨模型或非连续文本一律拒绝；</li>
+<li>审计保留<strong>两级 offset</strong>：父 span 的 <code>source_start/source_end</code> 与精确子串的 <code>anchor_start/anchor_end</code>。</li>
+</ul>
+
+<p>但它和 RAG 的窗口扩展有一处<strong>本质差别</strong>：</p>
+
+<table>
+  <tr><th style="width:130px">对比项</th><th>RAG 的窗口扩展</th><th>本方案的上下文包</th></tr>
+  <tr><td>窗口的作用</td><td>给生成器更多上下文，以便写出更好的答案</td><td>给<em>引用</em>更多落脚点，核心候选不变</td></tr>
+  <tr><td>窗口能否产生候选</td><td>窗口内容就是证据</td><td><strong>不能</strong>。提示词原话：<em>Adjacent text is context, not a new candidate</em></td></tr>
+  <tr><td>引用边界</td><td>无限制，模型可引用窗口内任何内容</td><td>不许跨模型、不许跨边（左字段只能引左包）</td></tr>
+  <tr><td>可回查性</td><td>通常到 chunk 粒度</td><td>两级 offset，精确到子串</td></tr>
+</table>
+
+<p>换句话说：<strong>RAG 扩窗是为了让模型"说得更多"，这里扩窗是为了让模型"引得更准"。</strong> H.2 的四处反向在这一点上依然成立——这次采用的是 RAG 的<em>工程手段</em>，而不是它的<em>目标</em>。这也提醒一件事：判断一个系统"是不是 RAG"，看的应该是<strong>检索结果被赋予了什么样的权力</strong>，而不是它用了哪些检索技巧。</p>
+
+<div class="card red">
+  <div class="lbl">同一次提交还收紧了门，而且尚未被验证</div>
+  <p><code>field_grounded</code> 现在要求 <code>results_grounded</code> 也成立——<strong>每一侧的 result 字段都必须是对应包内某个 span 的精确连续子串</strong>；方向冲突还额外要求 <code>direction_results_grounded</code>（那条 result 引文必须能规范化成该方向）。顶层与条件数仍是 <strong>14 条</strong>（<code>run_qae_localized.py:1191-1206</code>），但其中 <code>direction_conflict</code> 与 <code>field_grounded</code> 两项变得<strong>严格更难满足</strong>。</p>
+  <p>而 v3 产物里的 D1（idx=10）早于这次改动：当时的 <code>swarm_conflict</code> <strong>完全没有 <code>*_ref</code> 字段</strong>，<code>verification_route</code> 是 <code>fact</code>、<code>conflict_type</code> 是 <code>definition</code>，<code>structured_claims</code> 只有 <code>entity / attribute / condition</code> 三组锚点，<strong>没有 result 锚点</strong>。</p>
+  <p>由此得到两个<strong>待验证的预测，方向相反</strong>：其一，在新代码下 idx=10 那条唯一的 D1 很可能<strong>不再被承认</strong>——除非定位器这次能同时给出两侧的 result 引文、并让方向由该引文支撑；其二，<code>claim_refs</code> 现在传给直接性门的是<strong>两个完整审计包</strong>（4 个 ref）而非脱离定义的单句结果，这又<em>可能</em>让原本判 INDIRECT 的 D1 变成 DIRECT。</p>
+  <p><strong>不重跑一次无法定论。</strong> 但可以确定的是：既有产物不能再当作当前代码的行为证据——这正是 Run Manifest 要解决的问题。</p>
+</div>
+
+<p>测试状态：<code>pytest tests/</code> 现为 <strong>8 passed</strong>（新增 3 例：相邻包的同模型归属与半径上限、多 span 数值主张保留各自绝对 offset、跨包字段引用被拒绝）。</p>
 
 <h2>附录 · 核对方法与数据来源</h2>
 <ul>
