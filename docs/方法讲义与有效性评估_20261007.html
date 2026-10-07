@@ -577,6 +577,99 @@
   <tr><td>两份文档怎么用？</td><td><code>PRODUCT_DESIGN.md</code> 留着对导师讲方向；<code>EXPERIMENT_TECHNICAL_PLAN.md</code> 当路线图，但技术栈部分先砍到只留 schema 与测试。</td></tr>
 </table>
 
+<h2>附录 B · span 无损切分逐行拆解</h2>
+
+<p>对应 <code>server_work/run_qae_localized.py</code> 第 374–424 行。<strong>核心只有三行逻辑</strong>：</p>
+
+<pre style="background:var(--bg3);border-radius:6px;padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.7;margin:12px 0;font-family:var(--mono)">boundaries = list(re.finditer(r"\n+|(?&lt;=[.!?])(?=\s)", text))   # ① 找边界
+windows, cursor = [], 0
+for match in boundaries:
+    start, end = _trim_span_bounds(text, cursor, match.end())   # ② 裁两端空白
+    if start &lt; end:
+        windows.append((start, end))
+    cursor = end                                                # 注意：用裁剪后的 end
+start, end = _trim_span_bounds(text, cursor, len(text))         # ③ 尾部兜底
+if start &lt; end:
+    windows.append((start, end))</pre>
+
+<h3>① 边界正则的两个分支</h3>
+<table>
+  <tr><th style="width:230px">分支</th><th>匹配什么</th><th>为什么这么设计</th></tr>
+  <tr>
+    <td><code>\n+</code></td><td>一个或多个连续换行</td>
+    <td>多步推导与展示公式几乎都用<strong>空行分段</strong>。只按句号切会把"Step 1 / Step 2 / 公式块"糊成一坨。</td>
+  </tr>
+  <tr>
+    <td><code>(?&lt;=[.!?])(?=\s)</code></td>
+    <td><strong>零宽</strong>位置：紧跟在 <code>. ! ?</code> 之后、且后面是空白处</td>
+    <td>用前后查找（lookaround）而非直接匹配标点，是为了<strong>让句末标点留在前一个 span 里</strong>——切出来是完整句子，而不是把句号单独切出去。<br>顺带解决：<code>Wait!Really?Yes.</code> 这种标点后无空白的连写不会被切开。</td>
+  </tr>
+</table>
+
+<h3>② <code>cursor = end</code>：最容易忽略的一行</h3>
+<p>这里用的是<strong>裁剪后的</strong> <code>end</code>，不是 <code>match.end()</code>。后果是<strong>相邻两个窗口会重叠</strong>，重叠区恰好就是被裁掉的那段空白。</p>
+
+<p>例：<code>Step 1.\n\nStep 2.</code>（16 字符，正则只在 <code>[7,9)</code> 命中一次）</p>
+<table>
+  <tr><th style="width:150px">窗口</th><th style="width:130px">原始区间</th><th style="width:130px">裁剪后</th><th>结果</th></tr>
+  <tr><td>窗口 1</td><td><code>text[0:9]</code></td><td><code>[0:7]</code></td><td>裁掉尾部 <code>\n\n</code> → <code>"Step 1."</code>，<code>cursor</code> 被设为 <strong>7</strong>（不是 9）</td></tr>
+  <tr><td>窗口 2</td><td><code>text[7:16]</code></td><td><code>[9:16]</code></td><td>裁掉头部 <code>\n\n</code> → <code>"Step 2."</code></td></tr>
+</table>
+<p><code>[7:9]</code> 这段换行被<strong>裁了两次</strong>：既不会重复落账，也不会丢失文本。这个写法让"裁空白"天然幂等。</p>
+
+<h3>③ 尾部兜底为什么必须有</h3>
+<p>循环结束后无条件再追加一次 <code>text[cursor:]</code>，同时兜住两种情况：</p>
+<ul>
+  <li>全文<strong>没有任何边界</strong>（实测 <code>just one long line</code> → 1 个 span）；</li>
+  <li>正则意外产生<strong>零宽边界</strong>导致 <code>cursor</code> 未推进——尾部兜底保证一个字符都不会消失。</li>
+</ul>
+
+<h3>「无损」的准确含义（在真实产物上实测）</h3>
+<p>不是"一个字符都不丢"，而是<strong>只丢空白</strong>。idx=10 实测：</p>
+<table>
+  <tr><th style="width:90px">模型</th><th style="width:130px">原文字符</th><th style="width:120px">span 覆盖</th><th style="width:110px">未覆盖</th><th>未覆盖的字符类型</th></tr>
+  <tr><td>M0</td><td class="num">2</td><td class="num">1</td><td class="num">1</td><td>空格</td></tr>
+  <tr><td>M1</td><td class="num">331</td><td class="num">328</td><td class="num">3</td><td>空格</td></tr>
+  <tr><td>M2</td><td class="num">885</td><td class="num">875</td><td class="num">10</td><td>换行</td></tr>
+</table>
+<p>同时校验 <code>原文[start:end] == span.text</code>——<strong>全部自洽</strong>。任何结论都能拿 offset 回原文核对，这是"可审计"的物质基础。</p>
+
+<h3>每个 span 落账的 8 个字段</h3>
+<p><code>span_id</code>（<code>{model}-S{序号}</code>）· <code>model</code> · <code>start</code> · <code>end</code> · <code>text</code> · <code>kind</code> · <code>content_tokens</code> · <code>is_direct_answer</code></p>
+<p>其中三个供下一阶段使用：</p>
+<ul>
+  <li><strong><code>kind</code></strong>：<code>sentence</code> 或 <code>symbolic_or_formula</code>（含 <code>&lt;&gt;=|^_+*/</code> 或希腊字母，或出现 equation／formula／calculate／compute）。</li>
+  <li><strong><code>content_tokens</code></strong>：去停用词 + 词干化的内容词；公式片段额外保留单字符变量与希腊字母；最多存 80 个。</li>
+  <li><strong><code>is_direct_answer</code></strong>：命中"答案／选项是 X"模式。这类 span <strong>仍入账供审计，但会被 <code>_span_is_retrievable()</code> 排除在冲突候选之外</strong>——防止"选项字母不同"本身变成伪证据。</li>
+</ul>
+
+<h3>实测的边界情况</h3>
+<table>
+  <tr><th style="width:290px">输入</th><th style="width:150px">结果</th><th>说明</th></tr>
+  <tr><td><code>just one long line with no terminator</code></td><td>1 个 span</td><td>无边界，尾部兜底</td></tr>
+  <tr><td><code>"   \n  "</code>（纯空白）</td><td>0 个 span</td><td>开头直接 return</td></tr>
+  <tr><td><code>First sentence.\nSecond sentence.</code></td><td>2 个 span</td><td>换行即边界</td></tr>
+  <tr><td><code>display math block\n\nthe result follows</code></td><td>2 个 span</td><td>空行作边界，公式块与正文分开</td></tr>
+  <tr><td><code>Wait!Really?Yes.</code></td><td>1 个 span</td><td>标点后无空白 → 不切</td></tr>
+  <tr><td><code>e.g. this is one span because 3.14 follows</code></td><td>2 个：<code>e.g.</code> / <code>this is...</code></td><td><strong>误切</strong>——<code>e.g.</code> 后的空格触发了句末边界</td></tr>
+</table>
+
+<p>真实产物里还能抓到两处误判：</p>
+<ul>
+  <li><code>M1-S1</code> 被标成 <code>is_direct_answer=True</code>，只因它含 <code>Option B is incorrect</code>。它其实是 reasoning 段的开头，并非真在报答案。</li>
+  <li><code>M1-S3</code> 被标成 <code>symbolic_or_formula</code>，触发点是 JSON 尾部 <code>confidence_level</code> 里的<strong>下划线</strong>。</li>
+</ul>
+<p><strong>这两类误判的后果都是保守的</strong>：前者只是少一个候选（宁可漏召回），后者只让 token 集合变大一点（检索评分噪声），都不会让错误内容变成证据。代码注释也写明了这个取舍：</p>
+<blockquote style="margin:12px 0;padding:10px 18px;border-left:3px solid var(--line2);color:var(--ink2);font-size:14px">
+  A bad sentence boundary can make a span less convenient for retrieval, but it never loses source text or allows a generated quote to enter the evidence ledger.
+</blockquote>
+
+<div class="card teal">
+  <div class="lbl">层次提醒</div>
+  <p><strong>切分切歪不会导致方案出错，只会让检索配对变差。</strong>原因在层次：span 不是"主张"，它只是<strong>程序拥有的候选空间</strong>。真正带实体／属性／方向的结构化主张（Claim），要等候选对通过八条硬门的冲突判定之后才物化。</p>
+  <p>所以这一步的目标从来不是"切得语义完美"，而是<strong>切得确定、可复现、每个字都能回查</strong>。切分质量影响的是召回率——而这恰好是当前实验的瓶颈所在。</p>
+</div>
+
 <h2>附录 · 核对方法与数据来源</h2>
 <ul>
   <li><strong>逐题产物：</strong><code>server_work/qae_span_hybrid_focus10_v3_20261007.json</code>（10 条记录）。读取字段 <code>gold</code>、<code>stored_goa_answer</code>、<code>swarm_conflict.status</code>、<code>swarm_guard</code>、<code>qae_ledger</code>、<code>qae_pooler</code>、<code>qae_final_answer</code>、<code>swarm_spans</code>、<code>swarm_span_candidates</code>、<code>swarm_diagnosis</code>。</li>
