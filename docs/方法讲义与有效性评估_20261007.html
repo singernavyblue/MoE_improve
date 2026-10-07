@@ -670,11 +670,96 @@ if start &lt; end:
   <p>所以这一步的目标从来不是"切得语义完美"，而是<strong>切得确定、可复现、每个字都能回查</strong>。切分质量影响的是召回率——而这恰好是当前实验的瓶颈所在。</p>
 </div>
 
+<h2>附录 C · 一个走通的例子（含两处修正）</h2>
+
+<p>以下题目是<strong>为讲清流程而虚构的</strong>，真实产物里没有这道题——因为真实那 10 题里这条链路一次都没走通过。题目故意设计成"正确答案本来就被某个模型说出来过，只是被旧流程压掉"，从而让整条链路完整走一遍。</p>
+
+<blockquote style="margin:12px 0;padding:10px 18px;border-left:3px solid var(--line2);color:var(--ink2);font-size:14px">
+  <strong>题：</strong>关于酶 E 的催化活性随温度的变化，下列哪项正确？<br>
+  （A）温度升高，活性单调上升　（B）温度升高，活性单调下降<br>
+  （C）先升后降，存在一个最适温度　（D）活性不随温度变化<br>
+  <strong>正确答案：C</strong>
+</blockquote>
+
+<table>
+  <tr><th style="width:70px">链</th><th style="width:70px">答案</th><th>链里的关键句</th><th style="width:160px">程序判出的方向</th></tr>
+  <tr><td>M0</td><td>A</td><td>「温度升高提供更多动能，反应速率随之增大，故活性升高」</td><td><code>increase</code></td></tr>
+  <tr><td>M1</td><td>C</td><td>「存在最适温度；超过最适温度后，活性反而随温度升高而下降」</td><td><code>decrease</code>（带条件）</td></tr>
+  <tr><td>M2</td><td>B</td><td>「酶是蛋白质，高温变性失活，故温度升高活性下降」</td><td><code>decrease</code></td></tr>
+</table>
+
+<p>旧流程票决 → <strong>A-pool = A</strong>（错）。整套方法的任务只有一句话：<strong>在只靠证据的前提下把 A 改成 C；做不到就老实地留在 A。</strong></p>
+
+<h3>C.1 六步走一遍</h3>
+<table>
+  <tr><th style="width:150px">步骤</th><th style="width:80px">谁在做</th><th>本例的具体输入与输出</th></tr>
+  <tr><td><strong>① span 切分</strong></td><td>程序</td><td>M0 的那句切为 <code>M0-S5</code>，M2 的那句切为 <code>M2-S7</code>，各记 <code>start:end</code>。两句均 ≥18 字符、非 <code>is_direct_answer</code> → 有资格当候选。</td></tr>
+  <tr><td><strong>② 候选检索</strong></td><td>程序</td><td>两句词面重叠于 {温度, 活性}，跨模型 → 配成一对 P3。本题共留 11 对（上限 24）。<strong>此时模型什么都还没做，候选空间完全由程序给定。</strong></td></tr>
+  <tr><td><strong>③ 分诊</strong></td><td>模型</td><td>看到 11 对候选 + 完整题目（含选项文字），但<strong>看不到 A-pool 与各链答案</strong>。输出 <code>problem_type=causal_mechanism</code>、<code>diagnosis_type=fact_or_concept_error</code>、<code>verification_eligible=true</code>、<code>span_refs=[M0-S5, M2-S7]</code>，不选答案。</td></tr>
+  <tr><td><strong>④ 冲突硬门</strong></td><td>程序</td><td>16 个与条件同时成立 → 承认冲突 <strong>D1</strong>；此时才第一次把这两句物化为结构化 Claim（实体／属性／条件／方向）。</td></tr>
+  <tr><td><strong>⑤ 盲验证</strong></td><td>模型×3</td><td>待查事实问题：「酶 E 的温度超过最适温度后继续升温，催化活性是升高还是降低？」题干已去选项。三答均为「降低」→ 归一化 <strong>STRONG</strong>。</td></tr>
+  <tr><td><strong>⑥ 直接性门 + 池化</strong></td><td>程序+模型</td><td>门控判 <code>ADMIT</code>／<code>DIRECT</code>（该事实能直接区分两条主张）→ 映射得 <code>contradicts=[A]</code>、<code>supports=[C]</code> → 可行集 {B, C} → 池化器选 C 并引用 <code>D1-E1</code>，而 <code>D1-E1.supports</code> 确有 C → 放行。<strong>最终 = C，修正成功。</strong></td></tr>
+</table>
+
+<h3>C.2 把条件逐个破坏，看它停在哪一步</h3>
+<table>
+  <tr><th style="width:270px">改动</th><th style="width:180px">停在哪一步</th><th>结果</th></tr>
+  <tr><td>M0 与 M2 其实都在说"下降"，只是措辞不同</td><td>④ 方向检查判<strong>兼容</strong></td><td>不承认冲突，保留 A-pool</td></tr>
+  <tr><td>M2 那句只有 12 个字符</td><td>② 达不到可检索门槛</td><td>没有候选对，保留 A-pool</td></tr>
+  <tr><td>盲验证三家给出两个不同说法</td><td>⑤ 归一化记 <strong>CONFLICT</strong></td><td>不映射选项，证据作废，保留 A-pool</td></tr>
+  <tr><td>事实为真但不能决定选哪个</td><td>⑥ 直接性门判 <strong>INDIRECT</strong></td><td>拒绝，并<strong>清空</strong>该证据的 <code>supports</code>／<code>contradicts</code>，使其连"排除选项"的权力都没有</td></tr>
+  <tr><td>A-pool 本来就对</td><td>③ 之前就没有跨模型分歧候选</td><td>直接 <code>RETAIN_A_POOL</code>，一次模型调用都不发生</td></tr>
+</table>
+
+<div class="card blue">
+  <div class="lbl">一句话记住三道闸门</div>
+  <p>三道闸门问的是同一个问题——<strong>你能不能说清楚"凭什么改答案"？</strong></p>
+  <p><strong>④</strong> 凭什么认为这是真分歧 → <strong>⑤</strong> 凭什么认为你的证据成立 → <strong>⑥</strong> 凭什么认为这条证据配决定选项。</p>
+</div>
+
+<h3>C.3 两处修正</h3>
+
+<div class="card red">
+  <div class="lbl">修正一 · 诊断模型其实看得到选项</div>
+  <p><code>_diagnosis_prompt(record["question"], ...)</code> 传的是完整 <code>question</code>；实测 idx=10 的 question 里 <code>(A)(B)(C)(D)</code> 齐全。诊断模型看不到的只是 <strong>A-pool 与各链答案</strong>。</p>
+  <p>真正"把选项切掉"的是<strong>盲验证器</strong>——提示词里的题干由 <code>_stem_options()</code> 去掉选项，并显式写明 "answer choices removed"。</p>
+</div>
+
+<div class="card red">
+  <div class="lbl">修正二 · 选项级证据被锁死在候选集内（结构性限制）</div>
+  <p><code>run_ledger</code> 中映射结果按 <code>_candidate_letters(record)</code>（= A-pool ∪ 各链答案）过滤；池化时若改投集合外的选项，程序强制回退 A-pool。</p>
+  <p><strong>所以：这套方法只能把答案改成"某个模型本来已经提过、但被旧流程压掉"的那个选项，不可能发现第四个选项。</strong>唯一例外是程序自带数值／单位模板算出的 <code>HARD</code> 结论，那条路不受候选集限制。</p>
+</div>
+
+<h3>C.4 用"可达性"重算那 10 题</h3>
+<p>按"正确答案是否落在 A-pool ∪ 各链答案"这一标准逐题核对 <code>qae_span_hybrid_focus10_v3_20261007.json</code>：</p>
+<table>
+  <tr><th style="width:60px">题号</th><th style="width:60px">gold</th><th style="width:70px">A-pool</th><th style="width:150px">候选集</th><th>gold 可达？</th></tr>
+  <tr><td>2</td><td>C</td><td>C</td><td>C, B, A</td><td>★</td></tr>
+  <tr><td>7</td><td>B</td><td>B</td><td>B, D</td><td>★</td></tr>
+  <tr><td><strong>8</strong></td><td>B</td><td><strong>A</strong></td><td>A, B</td><td><strong>★ 可修却没修</strong></td></tr>
+  <tr><td>9</td><td>D</td><td>C</td><td>C, B</td><td><strong>✘ 结构上不可修</strong></td></tr>
+  <tr><td>10</td><td>D</td><td>D</td><td>D, B</td><td>★</td></tr>
+  <tr><td>12</td><td>A</td><td>B</td><td>B, D</td><td><strong>✘ 结构上不可修</strong></td></tr>
+  <tr><td>13</td><td>D</td><td>D</td><td>D, A</td><td>★</td></tr>
+  <tr><td><strong>14</strong></td><td>B</td><td><strong>C</strong></td><td>C, A, B</td><td><strong>★ 可修却没修</strong></td></tr>
+  <tr><td>16</td><td>A</td><td>A</td><td>A, D</td><td>★</td></tr>
+  <tr><td>17</td><td>B</td><td>B</td><td>B, C</td><td>★</td></tr>
+</table>
+<p><strong>4 道错题里，8 与 14 是理论上可修的，9 与 12 无论召回多好都不可能修好</strong>（正确答案从未被任何模型说出过）。因此召回的真实上界是 <strong>2/4</strong>，不是 4/4。</p>
+
+<div class="card amber">
+  <div class="lbl">另有一处漏看</div>
+  <p>每题检索到的候选对为 5–24 对（总计 192），但诊断环节<strong>每题只看前 12 对</strong>（<code>all_pairs[:12]</code>）。那几道 24 对的题，有<strong>一半候选从未被模型看过</strong>。</p>
+</div>
+
 <h2>附录 · 核对方法与数据来源</h2>
 <ul>
   <li><strong>逐题产物：</strong><code>server_work/qae_span_hybrid_focus10_v3_20261007.json</code>（10 条记录）。读取字段 <code>gold</code>、<code>stored_goa_answer</code>、<code>swarm_conflict.status</code>、<code>swarm_guard</code>、<code>qae_ledger</code>、<code>qae_pooler</code>、<code>qae_final_answer</code>、<code>swarm_spans</code>、<code>swarm_span_candidates</code>、<code>swarm_diagnosis</code>。</li>
   <li><strong>计数复核：</strong>span 总数 = 各记录 <code>swarm_spans.spans</code> 长度之和 = 212；候选对总数 = 各记录 <code>swarm_span_candidates.candidate_pairs</code> 长度之和 = 192；<code>CONFLICT</code> 状态记录数 = 1（idx 10）。</li>
   <li><strong>正确率：</strong>逐题比较 <code>stored_goa_answer</code> 与 <code>gold</code>，得 6/10；比较 <code>qae_final_answer</code> 与 <code>gold</code>，得 6/10。</li>
+  <li><strong>可达性统计：</strong>候选集定义为 <code>stored_goa_answer</code> 去重后并入 <code>initial_answers.values()</code>（即 <code>_candidate_letters</code> 的取值域）。<code>gold</code> 落在候选集内的题号 = 2, 7, 8, 10, 13, 14, 16, 17（8 题）；不在的 = 9, 12（2 题）。错题中的可达题 = 8, 14，故召回上界为 2/4。</li>
+  <li><strong>候选对展示上限：</strong><code>run_qae_localized.py</code> 的 <code>run_diagnose</code> 中 <code>shown_pairs = all_pairs[:12]</code>，即每题最多 12 对进入诊断提示词。</li>
   <li><strong>代码状态：</strong><code>run_qae_localized.py</code> 共 1981 行；阶段入口见 <code>--stage</code> 的 choices；<code>--diagnosis-gate</code> 定义在第 1956 行；诊断状态机 <code>_diagnosis_state</code> 在第 620 行。</li>
   <li><strong>版本状态：</strong>git 提交 <code>35daf30 feat: add diagnosis-gated span verification</code>；<code>tests/test_span_diagnosis.py</code> 含 3 个用例。</li>
   <li><strong>注意：</strong>10 题样本来自"初始答案确有分歧"的 GPQA 子集，属有偏难例集，<strong>不能用于估计整体准确率</strong>。"212 / 192 / 1 / 2 / 1 / 0 / 0" 这组数字见 <code>SPAN_HYBRID_TECHNICAL.md</code> §8，已与产物逐项核对一致。</li>
