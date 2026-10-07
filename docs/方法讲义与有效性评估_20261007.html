@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>多模型推理诊断方案 · 教学讲义与有效性评估</title>
+<style>
+  :root{
+    --ink:#1f2328; --ink2:#4a5057; --ink3:#828b94;
+    --line:#e3e6ea; --line2:#cfd4da;
+    --bg:#ffffff; --bg2:#f6f7f9; --bg3:#eef1f4;
+    --blue:#1a63b8; --blue-bg:#eaf3fc;
+    --teal:#0f6e56; --teal-bg:#e6f5ef;
+    --amber:#8a5a0b; --amber-bg:#fdf3e0;
+    --red:#a32d2d; --red-bg:#fdecec;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg2); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    font-size:15px; line-height:1.75; -webkit-font-smoothing:antialiased;
+  }
+  .page{max-width:900px;margin:0 auto;background:var(--bg);padding:56px 64px 80px;
+        box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  h1{font-size:27px;line-height:1.35;font-weight:600;margin:0 0 10px;letter-spacing:-.2px}
+  h2{font-size:20px;font-weight:600;margin:52px 0 14px;padding-bottom:9px;
+     border-bottom:1px solid var(--line);letter-spacing:-.1px}
+  h3{font-size:16px;font-weight:600;margin:30px 0 10px}
+  h4{font-size:14.5px;font-weight:600;margin:20px 0 6px;color:var(--ink)}
+  p{margin:0 0 13px}
+  ul,ol{margin:0 0 14px;padding-left:22px}
+  li{margin:5px 0}
+  strong{font-weight:600}
+  code{font-family:var(--mono);font-size:.88em;background:var(--bg3);
+       padding:1.5px 5px;border-radius:4px;color:#243b53}
+  .sub{color:var(--ink3);font-size:13.5px}
+  .meta{color:var(--ink3);font-size:13px;margin:0 0 26px;line-height:1.9}
+  .meta b{color:var(--ink2);font-weight:600}
+
+  .tldr{background:var(--bg2);border-left:3px solid var(--ink);
+        border-radius:0 8px 8px 0;padding:20px 24px;margin:0 0 34px}
+  .tldr .k{font-size:12px;letter-spacing:.08em;color:var(--ink3);
+           text-transform:uppercase;font-weight:600;margin-bottom:8px}
+  .tldr p{margin:0 0 9px;font-size:15px}
+  .tldr p:last-child{margin-bottom:0}
+
+  .card{border:1px solid var(--line);border-radius:10px;padding:18px 22px;margin:16px 0}
+  .card.blue{background:var(--blue-bg);border-color:#cfe2f5}
+  .card.teal{background:var(--teal-bg);border-color:#c9e8dd}
+  .card.amber{background:var(--amber-bg);border-color:#f2e0bd}
+  .card.red{background:var(--red-bg);border-color:#f4cccc}
+  .card .lbl{font-size:12px;font-weight:600;letter-spacing:.05em;margin-bottom:7px}
+  .card.blue .lbl{color:var(--blue)} .card.teal .lbl{color:var(--teal)}
+  .card.amber .lbl{color:var(--amber)} .card.red .lbl{color:var(--red)}
+  .card p:last-child,.card ul:last-child{margin-bottom:0}
+
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--bg2);font-weight:600;font-size:13px;color:var(--ink2)}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:13px}
+  tr.hl td{background:var(--red-bg)}
+  tr.hl2 td{background:var(--teal-bg)}
+  caption{caption-side:top;text-align:left;color:var(--ink3);font-size:12.5px;padding-bottom:7px}
+
+  .num-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:18px 0}
+  .num-grid .n{background:var(--bg2);border-radius:8px;padding:13px 15px}
+  .num-grid .n .lab{font-size:12px;color:var(--ink3);margin-bottom:5px}
+  .num-grid .n .val{font-size:23px;font-weight:600;line-height:1.15;
+                    font-variant-numeric:tabular-nums}
+  .num-grid .n .val.red{color:var(--red)}
+  .num-grid .n .val.teal{color:var(--teal)}
+  .num-grid .n .val.amber{color:var(--amber)}
+
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px;margin:18px 0}
+  .flow .s{flex:1 1 130px;background:var(--bg2);border:1px solid var(--line);
+           border-radius:8px;padding:10px 12px;min-width:0}
+  .flow .s .t{font-size:13px;font-weight:600;margin-bottom:3px}
+  .flow .s .d{font-size:11.5px;color:var(--ink3);line-height:1.5}
+  .flow .s.prog{background:var(--blue-bg);border-color:#cfe2f5}
+  .flow .s.mdl{background:var(--amber-bg);border-color:#f2e0bd}
+
+  .qa{border-top:1px solid var(--line);padding-top:14px;margin-top:18px}
+  .qa .q{font-weight:600;font-size:14.5px;margin:0 0 5px}
+  .qa .a{margin:0;color:var(--ink2)}
+  .qa .a code{font-size:.86em}
+
+  .verdict{border:1px solid var(--line);border-radius:10px;margin:18px 0;overflow:hidden}
+  .verdict .hd{display:flex;align-items:baseline;gap:10px;padding:13px 20px;background:var(--bg2);
+               border-bottom:1px solid var(--line)}
+  .verdict .hd .tag{font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:20px;
+                    white-space:nowrap}
+  .verdict .hd .tag.ok{background:var(--teal-bg);color:var(--teal)}
+  .verdict .hd .tag.no{background:var(--red-bg);color:var(--red)}
+  .verdict .hd .tag.mid{background:var(--amber-bg);color:var(--amber)}
+  .verdict .hd .t{font-weight:600;font-size:15px}
+  .verdict .bd{padding:16px 20px}
+  .verdict .bd p:last-child{margin-bottom:0}
+
+  .rule{background:var(--bg2);border-left:3px solid var(--teal);padding:12px 18px;
+        margin:16px 0;font-size:14.5px;border-radius:0 6px 6px 0}
+  .rule strong{color:var(--teal)}
+
+  footer{margin-top:60px;padding-top:20px;border-top:1px solid var(--line);
+         color:var(--ink3);font-size:12.5px;line-height:1.9}
+
+  @media print{
+    body{background:#fff;font-size:11.5pt}
+    .page{box-shadow:none;padding:0;max-width:none}
+    h2{page-break-after:avoid} .card,.verdict,table{page-break-inside:avoid}
+  }
+  @media (max-width:720px){
+    .page{padding:30px 20px 50px}
+    .num-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>多模型推理诊断方案<br>教学讲义与有效性评估</h1>
+<p class="meta">
+  <b>评估对象：</b><code>server_work/PRODUCT_DESIGN.md</code>、<code>docs/EXPERIMENT_TECHNICAL_PLAN.md</code><br>
+  <b>对照实现：</b><code>server_work/run_qae_localized.py</code>（span-first 混合流水线，单文件 1981 行）<br>
+  <b>实证依据：</b><code>server_work/qae_span_hybrid_focus10_v3_20261007.json</code>（10 题逐题产物，已逐条核对）<br>
+  <b>日期：</b>2026-10-07 &nbsp;·&nbsp; <b>范围：</b>《项目论证》所述新方案（问题分类—差异归因—动态主张—独立验证—安全融合）
+</p>
+
+<div class="tldr">
+  <div class="k">一分钟结论</div>
+  <p><strong>方法的科学方向是对的，工程骨架也基本立住了；但它对当前实验还不足以产生有效结论。</strong></p>
+  <p>10 题实测：修正 0、破坏 0、净收益 0。更关键的是——<strong>4 道原本答错的题，一道都没找到冲突；唯一找到冲突的第 10 题，原本就是对的。</strong></p>
+  <p>所以现在的"0 破坏"不是保守换来的稳健，而是<strong>结构性无效</strong>：一个什么都不做的系统，指标与它完全一致。</p>
+  <p>另有三处必须先补的缺口：① 产物与阶段对不上（无法追溯哪次改动带来什么）；② 缺人工 gold set（诊断精度与冲突召回率不可测）；③ 池化环节的提示词在<strong>无视证据重新解题</strong>。</p>
+</div>
+
+<h2>第一部分 · 从零讲懂这套方法</h2>
+
+<h3>1. 起点：为什么要让多个模型"一起答"</h3>
+
+<p>大模型答错，很多时候不是"不会"，而是<strong>一次采样恰好走错了路</strong>。一次解码只走了推理树上的一个分支——这条分支在某个中间步骤拐错了弯，后面就一路错到底。同一道题换一次随机种子、换一个温度，很可能就对了。</p>
+
+<p>于是最朴素的想法出现了：<strong>既然单次采样不可靠，那就多采几次，看哪条路走得通。</strong>这就是近三年多模型协作的技术主线。</p>
+
+<h4>三代方法，一句话一代</h4>
+<table>
+  <caption>三代方法的关键差别在"聚合发生在哪一层"</caption>
+  <tr><th style="width:130px">代际</th><th style="width:170px">代表方法</th><th>它聚合的是什么</th><th style="width:190px">留下的问题</th></tr>
+  <tr>
+    <td>第一代</td>
+    <td>自一致性投票<br><span class="sub">Self-Consistency</span></td>
+    <td>同一个模型采样多条思维链，在<strong>最终答案</strong>层面多数投票。</td>
+    <td>仍然只看答案，不看理由；且全部多样性来自一个模型的内部重复采样。</td>
+  </tr>
+  <tr>
+    <td>第二代</td>
+    <td>多智能体辩论<br><span class="sub">Multi-Agent Debate</span></td>
+    <td>多个模型实例<strong>多轮相互批评与修正</strong>，让答案在辩论中收敛。</td>
+    <td>批评是自由文本，没有结构化证据；收敛不等于正确，可能一起收敛到同一个错误。</td>
+  </tr>
+  <tr>
+    <td>第三代</td>
+    <td>图协作<br><span class="sub">Mixture-of-Agents / Graph-of-Agents</span></td>
+    <td>把模型当作<strong>图的节点</strong>：先按能力选节点、再互评建边、再沿边传递消息、最后图池化。</td>
+    <td>聚合仍然发生在答案层面；<strong>回答不了"这些模型为什么给出不同答案"。</strong></td>
+  </tr>
+</table>
+
+<p>三代方法的效果都不差，但有一个共同的盲区，而这个盲区恰好就是本方案的出发点：</p>
+
+<div class="rule">
+  它们都在问"<strong>怎么把不同的答案合成一个更好的答案</strong>"，
+  却都绕过了"<strong>这些答案为什么不同</strong>"。
+</div>
+
+<h3>2. 关键概念：A-pool 是什么，为什么它是全篇地基</h3>
+
+<p>这是整套方案里最需要先钉死的词。<strong>A-pool</strong>（聚合前池）指的是：</p>
+
+<div class="card blue">
+  <div class="lbl">A-POOL</div>
+  <p><strong>在"融合动作"发生之前，那一组原始的、未经过任何修正的模型答案。</strong></p>
+  <p>在这个项目里，A-pool 就是三条冻结推理链经既有 GoA 流程汇总得到的那个答案。</p>
+</div>
+
+<p>A-pool 有两重身份，缺一不可：</p>
+<ul>
+  <li><strong>它是基准线</strong>——所有指标都是"相对 A-pool"算的。修正数 <code>fixed</code> = 原本错、最后对；破坏数 <code>broken</code> = 原本对、最后错；净收益 <code>net = fixed − broken</code>。</li>
+  <li><strong>它是安全网</strong>——方案的默认行为是<strong>"什么都不做，保留 A-pool"</strong>。任何改动都必须先挣得授权。</li>
+</ul>
+
+<p>理解这一点，你就理解了整套方案的哲学：<strong>它不是一个"想办法用更多模型换更高分"的方案，它是一个"只在能证明自己不会帮倒忙时才出手"的方案。</strong>这也正是它现在"净收益 0"的根源——后面会详细说。</p>
+
+<h3>3. 要治的四个病</h3>
+
+<p>方案把已有研究的不足归纳成四条，这也是它的四个设计目标：</p>
+
+<table>
+  <tr><th style="width:36px">#</th><th style="width:210px">病</th><th>具体表现</th><th style="width:230px">方案的对策</th></tr>
+  <tr>
+    <td>1</td><td>把答案不一致当投票问题</td>
+    <td>用模型数量或多数字代替证据。可解释性差，用户无从判断该不该信。</td>
+    <td>差异归因：先判定差异来自哪类错误机制，再决定是否值得干预。</td>
+  </tr>
+  <tr>
+    <td>2</td><td>通信与融合策略一刀切</td>
+    <td>数学题、医学题、文史题用同一套提示词、同一个"综合一下"的融合流程。</td>
+    <td>问题分类器：按题型路由主张粒度与验证方法。</td>
+  </tr>
+  <tr>
+    <td>3</td><td>融合过程缺乏可追溯性</td>
+    <td>把多个可能出错的输出交给聚合器，错误被融进最终答案；只报最终准确率看不出来。</td>
+    <td>主张带原始字符偏移 + 同时报告修正数／破坏数／净收益。</td>
+  </tr>
+  <tr>
+    <td>4</td><td>缺少"证据直接性"门控</td>
+    <td>一条<em>相关</em>的事实被当成<em>能决定选项</em>的事实，越权改写答案。</td>
+    <td>直接性门控：只有能直接影响待决选项的证据才允许改变答案。</td>
+  </tr>
+</table>
+
+<h3>4. 五段式流水线：一条"从归因到授权"的决策链</h3>
+
+<p>方案全文的框架是五段，顺序不能换——<strong>先分类、后处理；先归因、后干预</strong>：</p>
+
+<div class="flow">
+  <div class="s"><div class="t">① 问题分类器</div><div class="d">判断推理形态：数值计算 / 因果机制 / 条件逻辑 / 事实关系 / 开放发散。输出不是答案，是<strong>路由依据</strong>。</div></div>
+  <div class="s"><div class="t">② 差异诊断器</div><div class="d">答案不一致时归因：事实错、条件错、计算错、实体混淆，还是"答案不同但推理并不冲突"。</div></div>
+  <div class="s"><div class="t">③ 动态主张管理</div><div class="d">把可验证的关键步骤建成结构化主张（实体·属性·条件·取值），每条回链到原文片段；新类别进归并队列。</div></div>
+  <div class="s"><div class="t">④ 证据验证器</div><div class="d">针对关键主张生成<strong>不含选项与原答案</strong>的盲验证问题，多模型独立作答。</div></div>
+  <div class="s"><div class="t">⑤ 安全融合器</div><div class="d">四条规则：可追溯、须直接影响、只排除部分选项时作局部约束、无直接证据则保留 A-pool。</div></div>
+</div>
+
+<p>注意第④段的一句措辞：<strong>"不含选项与原答案"</strong>。这不是修辞，是整个方案的实测底线。如果验证模型看到了原题选项，它会被"原答案大概是对的"这种先验拖住——这就是所谓<strong>锚定效应</strong>，会让"独立验证"退化成"确认原答案"。所以必须盲。</p>
+
+<h3>5. 当前真正在跑的东西：span-first 混合流水线</h3>
+
+<p>上面五段是<strong>目标形态</strong>。而<code>SPAN_HYBRID_TECHNICAL.md</code>＋<code>run_qae_localized.py</code>描述的，是<strong>当前真实实现的形态</strong>——它和五段式并不一一对应，这一点很重要。真实的六个阶段是：</p>
+
+<table>
+  <caption>蓝色 = 程序确定性执行；橙色 = 模型做受限语义判断</caption>
+  <tr><th style="width:140px">阶段</th><th style="width:66px">归属</th><th>做什么</th><th style="width:250px">关键约束</th></tr>
+  <tr><td><code>spans</code> ①</td><td>程序</td><td>把每条推理链按换行与句末标点<strong>无损</strong>切分，记下文本相对原始冻结字符串的 <code>start:end</code> 偏移。</td><td>只裁两端空白，不调用模型。含直接选项回答的片段仍保留供审计，但不作冲突候选。</td></tr>
+  <tr><td><code>span_candidates</code> ②</td><td>程序</td><td>只在"至少两个模型答案不同"的记录上，跨模型两两检索疑似矛盾片段。</td><td>评分 = 词面重叠 + 稀有 token 加权 + 数字／公式／希腊符号加成；每题最多留 24 对。</td></tr>
+  <tr><td><code>diagnose</code> ③</td><td>模型</td><td>判定题型、差异归因、主张类别，并<strong>授权一对精确的候选片段</strong>进入下一步。</td><td>只看原题与最多 12 对候选，<strong>看不到选项字母、A-pool、gold</strong>。不被授权即写 <code>RETAIN_A_POOL</code>。</td></tr>
+  <tr><td><code>localize</code> ④</td><td>模型</td><td>在已授权的片段对中判定是否构成真冲突，并据此物化结构化主张。</td><td><strong>八条硬门</strong>：ref 必须在候选内、必须跨模型、同实体同条件、字段非空、锚点精确连续、方向必须不相容……</td></tr>
+  <tr><td><code>verify</code> ⑤</td><td>模型</td><td>对每个 D1-E1 生成验证问题，三个模型（Qwen／Mathstral／BioMistral）独立盲答。</td><td>提示中不含选项字母、A-pool、任一原始推理链、其他验证器的答案。</td></tr>
+  <tr><td><code>guard</code>＋<code>pool</code> ⑥</td><td>模型＋程序</td><td>先由账本判证据等级（≥2 路一致才 STRONG），再由直接性门控判定该证据能否裁决冲突，最后受约束地池化。</td><td>INDIRECT／UNRELATED／REJECT 一律清空支持与反驳，<strong>安全回退到 A-pool</strong>。</td></tr>
+</table>
+
+<h3>6. 设计决策的十个"为什么"</h3>
+
+<p>下面这一节是理解这套方法的关键。每一条都是"看起来多此一举、实际堵住一个具体漏洞"的设计。</p>
+
+<div class="qa">
+  <p class="q">Q1　为什么不让模型自己直接抽取主张（Claim）？</p>
+  <p class="a">因为会出三种错：① 模型把原文没说的归纳当成主张写进去（幻觉主张）；② 主张虽然附了引用片段，但实体、属性、方向、条件与片段<strong>语义错配</strong>；③ 大量与答案分歧无关的主张制造伪冲突，把候选组合数量炸开。所以改成<strong>"程序先找可能矛盾的原文片段，只为已确认的矛盾建立结构化主张"</strong>。</p>
+</div>
+
+<div class="qa">
+  <p class="q">Q2　为什么片段要记字符偏移（offset），而不是直接存文本？</p>
+  <p class="a">为了<strong>可审计与可回放</strong>。有了 <code>start:end</code>，任何结论都能一键回到原文那一句核对，也能在事后重跑而不依赖当时的模型输出。方案的底线指标就是"任何最终答案变化都必须能关联到获授权的直接证据"——没有 offset，这句话是无法验证的空话。</p>
+</div>
+
+<div class="qa">
+  <p class="q">Q3　为什么候选检索用"词面 + 符号"这种粗糙办法，而不用语义向量？</p>
+  <p class="a">因为这一步的职责是<strong>高召回、可审计</strong>，不是判断对错。词面与符号重叠是确定性的、可复现的、可逐条检查的；语义相似度则不可解释，且会把"表述不同但意思相同"和"真正矛盾"混在一起。判对错留给后面受限的模型判断。<strong>再强调一次：检索分数不是冲突概率，也不是证据强度。</strong></p>
+</div>
+
+<div class="qa">
+  <p class="q">Q4　为什么诊断模型不许看选项字母和 A-pool？</p>
+  <p class="a">防止它<strong>直接跳到"选哪个"</strong>。诊断器的职责是分诊（这是什么类型的题、差异是什么类型的错），一旦它看到了选项，它会忍不住去解题，输出就退化成"我猜是 B"，归因信息随之消失。这是个<strong>用信息剥夺来强制职责分离</strong>的经典手法。</p>
+</div>
+
+<div class="qa">
+  <p class="q">Q5　为什么定位阶段要设"八条硬门"，而不是相信模型说"是的，有冲突"？</p>
+  <p class="a">因为模型的"是"太便宜了。硬门把"模型说冲突"变成"<strong>可核验的结构化冲突</strong>"：必须跨模型、必须同实体同条件、必须字段能由原文锚点支撑、方向必须由程序判定为不相容。<br>
+  <strong>方向门尤其精妙</strong>：两个都说"increase"的表述，哪怕措辞完全不同，也不会触发任何验证调用——因为同向不是冲突。这直接挡掉了"同义改写被误判为矛盾"这一类最常见的假阳性。</p>
+</div>
+
+<div class="qa">
+  <p class="q">Q6　为什么只允许"一次受限修复"？</p>
+  <p class="a">当候选已经满足"跨模型、已检索、同实体同条件、方向确实相反"，但模型漏了属性锚点时，允许补一次。<strong>但这次补调只能补锚点和 route，不能改片段对、不能改冲突结论、不能改来源模型、不能改方向。</strong><br>
+  理由：如果允许它自由重来，第二次调用会"重新发明一个更方便的冲突"——它知道第一次失败了，于是倾向于顺着裁判的意图编一个能过关的答案。只让补字段、不让改结论，就把这个后门焊死了。</p>
+</div>
+
+<div class="qa">
+  <p class="q">Q7　为什么验证要"盲"？</p>
+  <p class="a">锚定效应。如果验证模型看到"原答案是 A"，它给出的"独立结论"会系统性地偏向 A。这样得到的"一致"是<strong>假一致</strong>——它验证的不是事实，而是原答案。<br>
+  注意提示里连<strong>其他验证器的答案</strong>也不能出现，这是防止"从众"。三路必须真的独立。</p>
+</div>
+
+<div class="qa">
+  <p class="q">Q8　为什么"一条事实为真"还不够，还要判"直接性"？</p>
+  <p class="a">这是整个方案最有想法的一步，也是它当前最大的瓶颈（见第二部分判断四）。<br>
+  例：盲验证确认了"subgenomic RNA 转录是<strong>不连续</strong>的"，两路独立一致，证据等级 STRONG。<strong>但这条事实并不能直接推出原题四个选项里哪个对</strong>——它只是和题目领域相关。如果放它进去，池化器就可能据此改判，从而"用一条真事实改出一个错答案"。<br>
+  所以门控要求：证据必须<strong>直接支持或直接反驳待决主张</strong>，而不只是"相关"。相关≠可用。</p>
+</div>
+
+<div class="qa">
+  <p class="q">Q9　为什么要同时报告"修正数"和"破坏数"？</p>
+  <p class="a">防止<strong>指标虚高</strong>。只看最终准确率，一个"把所有答案都改掉、对一半错一半"的系统，和一个"不改任何东西"的系统，可能看起来差不多。<br>
+  把 <code>fixed</code>（改好了）和 <code>broken</code>（改坏了）分开报，"净收益 = fixed − broken"才能真正反映方法的品质。<strong>一个不停改错的方法，即使最终准确率没跌，也是失败的。</strong></p>
+</div>
+
+<div class="qa">
+  <p class="q">Q10　为什么方案里强调"不把模型投票数当证据"？</p>
+  <p class="a">因为多数票<strong>不构成事实证据</strong>。三个同源或同偏向的模型一致犯错是完全可能的——尤其在医学、法律这类长尾知识上。投票只反映"意见分布"，不反映"世界是什么样"。方案要求任何答案变更都必须关联到<strong>可追溯的直接证据</strong>，把"谁说的"和"是否成立"彻底分开。</p>
+</div>
+
+<h2>第二部分 · 这个方案对当前实验有效吗</h2>
+
+<h3>7. 当前实验的真实状态</h3>
+
+<p>下面所有数字都来自实际产物文件，不是文档转述。我逐题拆开了 <code>qae_span_hybrid_focus10_v3_20261007.json</code> 的 10 条记录。</p>
+
+<div class="num-grid">
+  <div class="n"><div class="lab">样本</div><div class="val">10<span style="font-size:14px;color:var(--ink3)"> 题</span></div></div>
+  <div class="n"><div class="lab">原文片段 span</div><div class="val">212</div></div>
+  <div class="n"><div class="lab">跨模型候选对</div><div class="val">192</div></div>
+  <div class="n"><div class="lab">通过结构门的冲突</div><div class="val amber">1</div></div>
+</div>
+<div class="num-grid">
+  <div class="n"><div class="lab">STRONG 盲验证证据</div><div class="val amber">1</div></div>
+  <div class="n"><div class="lab">获 DIRECT 授权</div><div class="val red">0</div></div>
+  <div class="n"><div class="lab">A-pool 准确率</div><div class="val">6/10</div></div>
+  <div class="n"><div class="lab">净收益（修正−破坏）</div><div class="val red">0</div></div>
+</div>
+
+<p>样本是 10 道<strong>初始模型答案确实存在分歧</strong>的 GPQA 题（idx = 2、7、8、9、10、12、13、14、16、17），不是随机全量抽样。这一点必须先讲清楚：<strong>它是有偏的"难例集"，因此不能用它估计整体准确率；但正因为都是分歧题，它恰恰是检验"能不能修正"的最佳小样本。</strong></p>
+
+<h4>7.1 逐题结果</h4>
+
+<table>
+  <caption>阴影行 = 原本答错的题</caption>
+  <tr><th style="width:62px">题号</th><th style="width:62px">gold</th><th style="width:78px">A-pool</th><th>冲突定位结果</th><th style="width:70px">最终</th><th style="width:70px">结果</th></tr>
+  <tr><td class="num">2</td><td class="num">C</td><td class="num">C</td><td><code>NO_VALID_SPAN_CONFLICT</code></td><td class="num">C</td><td>正确</td></tr>
+  <tr><td class="num">7</td><td class="num">B</td><td class="num">B</td><td><code>NO_VALID_SPAN_CONFLICT</code></td><td class="num">B</td><td>正确</td></tr>
+  <tr class="hl"><td class="num">8</td><td class="num">B</td><td class="num">A</td><td><code>NO_VALID_SPAN_CONFLICT</code></td><td class="num">A</td><td>错误</td></tr>
+  <tr class="hl"><td class="num">9</td><td class="num">D</td><td class="num">C</td><td><code>NO_VALID_SPAN_CONFLICT</code></td><td class="num">C</td><td>错误</td></tr>
+  <tr class="hl2"><td class="num">10</td><td class="num">D</td><td class="num">D</td><td><code>CONFLICT</code>（唯一）</td><td class="num">D</td><td>正确</td></tr>
+  <tr class="hl"><td class="num">12</td><td class="num">A</td><td class="num">B</td><td><code>NO_VALID_SPAN_CONFLICT</code></td><td class="num">B</td><td>错误</td></tr>
+  <tr><td class="num">13</td><td class="num">D</td><td class="num">D</td><td><code>NO_VALID_SPAN_CONFLICT</code></td><td class="num">D</td><td>正确</td></tr>
+  <tr class="hl"><td class="num">14</td><td class="num">B</td><td class="num">C</td><td><code>NO_VALID_SPAN_CONFLICT</code></td><td class="num">C</td><td>错误</td></tr>
+  <tr><td class="num">16</td><td class="num">A</td><td class="num">A</td><td><code>NO_VALID_SPAN_CONFLICT</code></td><td class="num">A</td><td>正确</td></tr>
+  <tr><td class="num">17</td><td class="num">B</td><td class="num">B</td><td><code>NO_VALID_SPAN_CONFLICT</code></td><td class="num">B</td><td>正确</td></tr>
+</table>
+
+<div class="card red">
+  <div class="lbl">这句话请重点看</div>
+  <p><strong>4 道原本答错的题，冲突定位全部返回 <code>NO_VALID_SPAN_CONFLICT</code>；唯一找到冲突的第 10 题，A-pool 本来就是对的。</strong></p>
+  <p>意思是：流水线<strong>在该出手的地方一次都没出手，在不该出手的地方产生了一次出手冲动</strong>（被门控挡下）。</p>
+</div>
+
+<h3>8. 六个判断</h3>
+
+<div class="verdict">
+  <div class="hd"><span class="tag ok">已证成</span><span class="t">判断一：安全机制是真的有效</span></div>
+  <div class="bd">
+    <p>第 10 题是一次<strong>完美的安全演示</strong>，值得完整复盘：</p>
+    <ol>
+      <li>定位器找到唯一真冲突：M1-S2 说"转录是不连续过程"，M2-S4 说"转录确实是连续过程"。同实体、同条件、方向不相容，<strong>结构门全部通过</strong>。</li>
+      <li>盲验证：Qwen 答"不连续"，Mathstral 答"不连续"，BioMistral 返回不完整 JSON 记为 UNKNOWN。两路独立一致 → 证据等级 <strong>STRONG</strong>。</li>
+      <li>直接性门控：<code>decision: ADMIT</code> 但 <code>directness: INDIRECT</code>，理由写得很清楚——"不连续"这个结论虽然与 M1-S2 一致，但并不能直接裁决两个模型对<strong>机制</strong>的分歧。<strong>拒绝放行。</strong></li>
+      <li>池化器输出答案 <strong>C</strong>（错的）。程序随后判定 <code>retain_A_pool_after_pooler_constraint_failure</code>，<strong>回退到 A-pool 的 D</strong>——而 D 正是正确答案。</li>
+    </ol>
+    <p><strong>两道安全网（直接性门控 + 池化约束检查）连续生效，阻止了一次真实的"改对为错"。</strong>这不是纸面承诺，是有产物可查的实证。"不破坏"这个承诺，当前实现是能兑现的。</p>
+    <p>方案对自身的定位也很清楚：它<strong>优化的是"高精度、可审计的冲突介入"，而不是主张提取召回率的上界</strong>。从"不帮倒忙"这个目标看，它及格了。</p>
+  </div>
+</div>
+
+<div class="verdict">
+  <div class="hd"><span class="tag no">致命</span><span class="t">判断二：净收益 0，而且是结构性 0</span></div>
+  <div class="bd">
+    <p>修正 0、破坏 0、净收益 0。这个成绩看起来"很稳"，实则<strong>不可与"什么都不做"区分</strong>——一个直接返回 A-pool 的空系统，跑这 10 题的结果完全一样。</p>
+    <p>所以现在<strong>没有任何证据表明这个方法能带来收益</strong>。它证明了"不会更差"，但完全没证明"会更好"。</p>
+    <p>这里必须避免一个常见的推理陷阱：<strong>"0 破坏 = 方法安全有效"是错的。</strong>要判断 0 破坏是好是坏，必须同时看<strong>干预率</strong>——如果干预率本身接近 0，那么"0 破坏"几乎不包含任何信息，它只是"几乎没做事"的同义反复。<br>
+    本实验的干预率就是 0（10 题里答案变更 0 次），所以"0 破坏"目前不具备任何方法学意义。</p>
+  </div>
+</div>
+
+<div class="verdict">
+  <div class="hd"><span class="tag no">致命</span><span class="t">判断三：病根不在"门控太严"，在"召回链断了"</span></div>
+  <div class="bd">
+    <p>看到净收益 0，第一反应通常是"门控太保守，松一点就好了"。<strong>这个诊断是错的</strong>，因为数据不支持：</p>
+    <table style="margin:12px 0">
+      <tr><th style="width:230px">环节</th><th style="width:90px">掉到多少</th><th>问题</th></tr>
+      <tr><td>原文片段 → 跨模型候选对</td><td class="num">212 → 192</td><td>正常，只丢 9%，检索这一级没问题。</td></tr>
+      <tr><td>候选对 → 通过结构门的冲突</td><td class="num">192 → 1</td><td><strong>塌方级。</strong>0.5% 的通过率，10 题里 9 题直接零冲突。</td></tr>
+      <tr><td>冲突 → STRONG 证据</td><td class="num">1 → 1</td><td>唯一一条冲突成功产出了强证据，验证环节本身工作正常。</td></tr>
+      <tr><td>STRONG 证据 → DIRECT 授权</td><td class="num">1 → 0</td><td><strong>归零。</strong>唯一一条真证据被判"间接"，不可用。</td></tr>
+    </table>
+    <p>所以真正断掉的是<strong>第一级（192→1）</strong>和<strong>最后一级（1→0）</strong>，而不是"门控在最后拦了太多"。松门控解决不了 192→1 的塌方——因为<strong>4 道错题里连一个候选冲突都没通过结构门</strong>，门控根本没机会拦。</p>
+    <p><strong>结论：当前实现的瓶颈是"找不到该修的冲突"，不是"放行了太多不该放的冲突"。</strong>这两者的修法完全不同。</p>
+  </div>
+</div>
+
+<div class="verdict">
+  <div class="hd"><span class="tag mid">设计缺陷</span><span class="t">判断四：DIRECT 的定义让"能改答案"这条路走不通</span></div>
+  <div class="bd">
+    <p>这是我认为<strong>最值得你重新思考的一点</strong>，因为它不是调参问题，是定义问题。</p>
+    <p>仔细想第 10 题推出的那条事实：<em>"subgenomic RNA 转录是不连续的"</em>。<br>
+    门控要求证据"<strong>直接区分 D1 的两侧主张</strong>"。D1 的两侧主张是"连续" vs "不连续"——这条事实确实直接区分了它们。但它<b>区分了主张，却映射不到选项</b>。<br>
+    换句话说，门控在这里的判定其实混淆了两件不同的事：<strong>"证据能否裁决冲突"</strong>和<strong>"裁决结果能否映射到一个选项"</strong>。前者成立，后者不成立，于是它给了 INDIRECT。</p>
+    <div class="card amber" style="margin-top:14px">
+      <div class="lbl">更要紧的推论</div>
+      <p>方案对"直接性"的定义接近<strong>"唯一映射"</strong>——只有当一条事实能把候选选项收敛到唯一一个时才放行。<br>
+      但在四选一的封闭题里，<strong>绝大多数可验证的事实都做不到唯一映射</strong>：它通常只能<em>排除</em>其中一两个选项，而不是<em>确定</em>某一个。<br>
+      <strong>所以在这个定义下，DIRECT 授权率会长期趋近于 0，整条"改变答案"的通路是结构性地关闭的。</strong></p>
+    </div>
+    <p>好消息是方案自己已经写了解法，只是还没落地——方案 §5.5 第 3 条写着：</p>
+    <p style="padding-left:18px;border-left:2px solid var(--line2);color:var(--ink2)">
+      "若证据只排除部分选项，应<strong>作为局部约束使用</strong>。"
+    </p>
+    <p>以及 <code>SPAN_HYBRID_TECHNICAL.md</code> §9 第 3 条也承认："验证事实未必能映射到唯一选项……应增强'证据只排除特定选项'的部分约束映射。"<br>
+    <strong>把这条从"待办"变成"已实现"，是当前性价比最高的一次改动</strong>——它直接决定 DIRECT 授权率能否从 0 变成非 0。</p>
+  </div>
+</div>
+
+<div class="verdict">
+  <div class="hd"><span class="tag no">Bug 级</span><span class="t">判断五：池化环节在无视证据、重新解题</span></div>
+  <div class="bd">
+    <p>这是我在核对第 10 题产物时发现的具体问题。池化器的原始输出是：</p>
+    <pre style="background:var(--bg3);border-radius:6px;padding:12px 14px;overflow-x:auto;font-size:12.5px;line-height:1.65;margin:12px 0;font-family:var(--mono)">{
+  "answer": "C",
+  "evidence_ids": ["D1-E1"],
+  "reason": "Programmed +1 ribosomal frameshifting is a known mechanism
+             for producing pp1ab from Orf1b, making statement C correct
+             while the others are incorrect."
+}</pre>
+    <p>它<strong>形式上引用了 <code>evidence_ids</code></strong>，但它的理由——"程序性 +1 核糖体移码"——<strong>与它引用的那条证据（subgenomic RNA 转录的连续性）毫无关系</strong>。<br>
+    换句话说：<strong>池化器根本没有在使用证据，它在从零重新解答这道题。</strong></p>
+    <p>这是一条明确违背方案核心原则的问题——方案 §5.5 第 1 条要求"证据必须可追溯到原始推理或独立验证"，§6 的"评估防虚高"要求任何答案变化都能关联到直接证据。而池化器现在的行为，是把 evidence_id 当作<strong>装饰性的合规声明</strong>贴在自由推理的结果上。</p>
+    <div class="card teal" style="margin-top:14px">
+      <div class="lbl">也说明架构本身是对的</div>
+      <p>真正拦住错误的是<strong>程序侧的约束检查</strong>（<code>retain_A_pool_after_pooler_constraint_failure</code>），不是池化器的提示词。<br>
+      这恰好印证了方案那句核心原则——<strong>"程序拥有来源与候选空间，模型只做受限的语义判断"</strong>。当模型的自由度过大时，是程序的硬约束兜住了底。</p>
+    </div>
+    <p><strong>建议：把池化器的输出契约收紧为"在给定候选集内、按证据约束作出选择"，并显式禁止它引入候选集之外的新理由。</strong>当前这种"引用了证据 ID 但自由推理"的形态，会在样本量放大后成为破坏的主要来源。</p>
+  </div>
+</div>
+
+<div class="verdict">
+  <div class="hd"><span class="tag mid">分层</span><span class="t">判断六：两份文档对实验的有效性完全不同</span></div>
+  <div class="bd">
+    <p>你问的是"这两份文件组成的方案"。但它们的作用并不对等，必须分开评价：</p>
+    <table style="margin:14px 0">
+      <tr><th style="width:250px">文档</th><th style="width:110px">对实验的贡献</th><th>说明</th></tr>
+      <tr>
+        <td><code>PRODUCT_DESIGN.md</code></td>
+        <td><strong>基本无效力</strong></td>
+        <td>它是一份<strong>产品</strong>文档（含目标用户、MVP、迭代阶段、成功指标分层），而实验方案开篇就写明"本方案服务于方法验证阶段，而非产品开发阶段""不建设 Web 产品、用户系统、微服务"。<br>两者口径直接冲突。产品文档里那些"实验与审计面板""主张库运营机制"对当前实验<strong>不产生任何推动力</strong>。<br>它的真实价值是<strong>对导师／评审讲方向</strong>，不是指导做实验。</td>
+      </tr>
+      <tr>
+        <td><code>EXPERIMENT_TECHNICAL_PLAN.md</code></td>
+        <td><strong>方向正确，但严重超前</strong></td>
+        <td>见下方四条错位。</td>
+      </tr>
+    </table>
+
+    <h4>技术方案与现状的四条错位</h4>
+    <table>
+      <tr><th style="width:190px">方案要求</th><th style="width:250px">实际现状</th><th>影响</th></tr>
+      <tr>
+        <td>Run Manifest：每次运行绑定 <code>code_revision / seed / models / prompts</code></td>
+        <td>没有 manifest。产物靠<strong>文件名手工</strong>带版本，如 <code>..._focus10_v3_20261007.json</code>；<code>outputs/</code> 与 <code>results/</code> 还在 <code>.gitignore</code> 里，产物不入库。</td>
+        <td class="hl2" style="background:var(--amber-bg)"><strong>这是最该先补、成本最低、收益最高的一条。</strong>我读 v3 产物时发现 <code>swarm_diagnosis</code> 字段全部为 <code>null</code>——因为这份产物跑在"加入诊断门"之前（对应提交 <code>35daf30</code>）。文档与产物对不上，只能靠人去猜哪份产物包含哪个阶段。</td>
+      </tr>
+      <tr>
+        <td>Hydra + YAML 配置驱动，"技术路线只通过配置切换，不通过手工改代码制造对照组"</td>
+        <td>argparse 开关（<code>--span-hybrid</code>、<code>--diagnosis-gate</code>、<code>--no-coreference-gate</code>…）；旧的 claim 路径与 span-first 路径<strong>混在同一个 1981 行文件里</strong>靠 flag 切换。</td>
+        <td>配置驱动这一条<strong>实质上没有落地</strong>。对照组靠命令行开关而非配置，消融实验的可复现性依赖"记得用了哪些 flag"。</td>
+      </tr>
+      <tr>
+        <td>Pydantic + JSON Schema 结构约束；Parquet / DuckDB / MLflow 记录与分析</td>
+        <td>JSON 数组落盘，无 Pydantic 校验、无 MLflow、无 Parquet、无 DuckDB。</td>
+        <td>技术栈清单<strong>目前约八成是待建工程</strong>。每一样都要花时间，但它们验证科学假设的边际收益远低于判断二／三／四点出的三个缺口。</td>
+      </tr>
+      <tr>
+        <td>pytest 覆盖确定性规则；20–50 道人工审计回归集，"任何改动先过回归集"</td>
+        <td><code>tests/</code> 只有 1 个文件 3 个用例（<code>test_span_diagnosis.py</code>，覆盖诊断门的三种放行／保留分支）；<strong>人工回归集不存在</strong>。</td>
+        <td>方案里"任何提示词、规则或模型适配改动都应先跑回归集"这条<strong>当前无法执行</strong>——回归集不存在。</td>
+      </tr>
+    </table>
+
+    <h4>还有一个方向性错位：消融顺序和现状不同步</h4>
+    <p>方案 §7.2 建议的消融顺序是：① 题型分类 → ② 题型专用主张模板 → ③ 差异归因 → ④ 动态新增主张类型 → ⑤ 独立验证与直接性审查 → ⑥ 比较融合策略。</p>
+    <p>对照现状：<strong>⑤ 已经做完了（甚至已经被证伪过一次），①②③ 代码刚写完但一次都没在真数据上跑过，④ 做了一半（<code>new_claim_label</code> 有，归并机制没有）。</strong></p>
+    <p>所以按方案的顺序往下走，会出现"<strong>在未验证的上游环节之上，继续叠加新环节</strong>"的情况——一旦结果不对，你无法定位是分类错了还是验证错了。<strong>更稳的做法是先给已经跑完的 ⑤ 补上人工 gold set 和上界分析，把"这一级到底有没有用"结清，再往上加。</strong></p>
+  </div>
+</div>
+
+<h3>9. 当前最大的盲区：没有"可达上界"</h3>
+
+<p>这是我认为你的实验设计里<strong>最需要补的一个指标</strong>，因为它决定了"0 修正"到底该怎么解读。</p>
+
+<p>现在的情况是：A-pool 4 题错，流水线修正 0 题。有两种截然不同的解释：</p>
+<table>
+  <tr><th style="width:300px">解释</th><th>如果成立说明什么</th><th style="width:180px">对应的动作</th></tr>
+  <tr>
+    <td><strong>解释 A：保守得当</strong><br><span class="sub">这 4 题里根本没有"可被盲验证的直接证据"能定位到正确选项</span></td>
+    <td>方法是对的，只是这批题不存在可利用的证据。0 修正是<strong>正确行为</strong>。</td>
+    <td>换题、找更适合的题型。</td>
+  </tr>
+  <tr>
+    <td><strong>解释 B：方法失效</strong><br><span class="sub">这 4 题里其实有可验证的冲突，但流水线没找到</span></td>
+    <td>方法在关键环节失效，0 修正是<strong>漏检</strong>。</td>
+    <td>修召回：检索 / 结构门 / 直接性定义。</td>
+  </tr>
+</table>
+
+<p><strong>当前实验无法区分这两种解释</strong>，因为没有任何"上界"参照。而区分它们只需要很低的成本——<strong>只有 4 道题</strong>：人工看一眼第 8、9、12、14 题的正确答案与 A-pool 的差异，判断"是否存在一条可盲验证、且能排除错误选项的直接事实"。</p>
+
+<div class="card blue">
+  <div class="lbl">建议新增的两个指标</div>
+  <p><strong>1. 可达修正上界（oracle headroom）</strong>　用 gold 事后判定：在这批题里，最多有几道题是"逻辑上可被本方法修正的"。这个数字是所有收益指标的分母。<br>
+  没有它，<code>fixed = 0</code> 永远无法解读。</p>
+  <p><strong>2. 干预率（intervention rate）</strong>　答案被改变的比例。<br>
+  没有它，<code>broken = 0</code> 永远无法解读（因为"什么都不做"也能得到 0）。</p>
+</div>
+
+<h3>10. 建议：按性价比排序的六件事</h3>
+
+<table>
+  <tr><th style="width:40px">序</th><th style="width:260px">动作</th><th>为什么先做它</th></tr>
+  <tr>
+    <td>1</td>
+    <td><strong>把"局部约束"落地，替掉"唯一映射"</strong><br><span class="sub">方案 §5.5 第 3 条已写明，只差实现</span></td>
+    <td>直接决定 DIRECT 授权率能否从 <strong>0</strong> 变成非 0。只要它还是 0，"改变答案"这条路就是关闭的，后面所有优化都测不出来。<strong>这是当前唯一的单点瓶颈。</strong></td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><strong>给 4 道错题做人工上界判定</strong></td>
+    <td>成本极低（4 题），却能一次性回答"0 修正是保守得当还是方法失效"。<strong>不做这一步，你不知道该优化召回还是该换题型。</strong></td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><strong>收紧池化器的输出契约</strong><br><span class="sub">只允许在候选集内按证据约束选择，禁止引入候选集之外的新理由</span></td>
+    <td>修掉判断五指出的 bug 级问题。当前池化器引用证据 ID 却自由推理，是破坏风险的真正来源；现在靠程序侧的兜底检查拦住，样本放大后不可靠。</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td><strong>补 Run Manifest（先只做一个 JSON）</strong></td>
+    <td>成本几小时，收益极大。方案 §5 要求的所有字段先只写一个 <code>manifest.json</code>：<code>code_revision / source 文件哈希 / 各类 limit / 已跑阶段</code>。<br>仅这一项就能消除"读产物要猜哪份包含哪个阶段"的问题。</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td><strong>建 20–50 题人工回归集，先只测三件事</strong></td>
+    <td>题型分类准确率、诊断类型一致性、关键 span 召回率。<strong>没有这个，D0 诊断门的任何数字都是自证的</strong>——因为诊断本身没有 gold。顺带把方案 §9.1 里"无直接证据时不得改变 A-pool"等确定性规则扩成 pytest 用例。</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td><strong>扩样本到 198 题，并同时报"诊断放行率"</strong></td>
+    <td>10 题、1 个冲突，统计上什么都说明不了。<br>扩样时必须同时报 <code>ELIGIBLE / RETAIN_A_POOL</code> 比例——如果放行率本身极低，那问题在诊断门而不是在验证门。</td>
+  </tr>
+  <tr style="background:var(--bg2)">
+    <td>—</td>
+    <td><strong>暂缓：Hydra / MLflow / Parquet / DuckDB</strong></td>
+    <td>方案 §3 列的这些工具有明确价值，但<strong>它们不验证科学假设</strong>。先上 Pydantic 的 schema 校验（成本低、直接提升产物可靠性）和 pytest 扩用例，其余等实验需求明确后再引入。</td>
+  </tr>
+</table>
+
+<h3>11. 速查卡</h3>
+
+<div class="card teal">
+  <div class="lbl">一句话版本</div>
+  <p><strong>方案的科学问题选得准、架构原则（程序管来源、模型管判断、证据门控）也立得住；但它现在还没有产出任何正面证据，因为"能不能改答案"这条路被一个定义问题堵死了。</strong></p>
+</div>
+
+<table>
+  <tr><th style="width:220px">问题</th><th>结论</th></tr>
+  <tr><td>安全机制有效吗？</td><td><strong>有效，且有实证。</strong>第 10 题两道安全网连续阻止了一次"改对为错"。</td></tr>
+  <tr><td>能带来收益吗？</td><td><strong>目前无证据。</strong>净收益 0，与空系统不可区分。</td></tr>
+  <tr><td>0 破坏值得高兴吗？</td><td><strong>暂时不值得。</strong>干预率也是 0，"0 破坏"不含方法学信息。</td></tr>
+  <tr><td>瓶颈在哪？</td><td><strong>召回，不是门控。</strong>192 个候选对 → 1 个冲突（0.5%），4 道错题零冲突。</td></tr>
+  <tr><td>最该改哪一处？</td><td><strong>把"证据唯一映射到选项"改成"证据作为局部约束"</strong>——这是 DIRECT 授权率 0 的直接原因。</td></tr>
+  <tr><td>两份文档怎么用？</td><td><code>PRODUCT_DESIGN.md</code> 留着对导师讲方向；<code>EXPERIMENT_TECHNICAL_PLAN.md</code> 当路线图，但技术栈部分先砍到只留 schema 与测试。</td></tr>
+</table>
+
+<h2>附录 · 核对方法与数据来源</h2>
+<ul>
+  <li><strong>逐题产物：</strong><code>server_work/qae_span_hybrid_focus10_v3_20261007.json</code>（10 条记录）。读取字段 <code>gold</code>、<code>stored_goa_answer</code>、<code>swarm_conflict.status</code>、<code>swarm_guard</code>、<code>qae_ledger</code>、<code>qae_pooler</code>、<code>qae_final_answer</code>、<code>swarm_spans</code>、<code>swarm_span_candidates</code>、<code>swarm_diagnosis</code>。</li>
+  <li><strong>计数复核：</strong>span 总数 = 各记录 <code>swarm_spans.spans</code> 长度之和 = 212；候选对总数 = 各记录 <code>swarm_span_candidates.candidate_pairs</code> 长度之和 = 192；<code>CONFLICT</code> 状态记录数 = 1（idx 10）。</li>
+  <li><strong>正确率：</strong>逐题比较 <code>stored_goa_answer</code> 与 <code>gold</code>，得 6/10；比较 <code>qae_final_answer</code> 与 <code>gold</code>，得 6/10。</li>
+  <li><strong>代码状态：</strong><code>run_qae_localized.py</code> 共 1981 行；阶段入口见 <code>--stage</code> 的 choices；<code>--diagnosis-gate</code> 定义在第 1956 行；诊断状态机 <code>_diagnosis_state</code> 在第 620 行。</li>
+  <li><strong>版本状态：</strong>git 提交 <code>35daf30 feat: add diagnosis-gated span verification</code>；<code>tests/test_span_diagnosis.py</code> 含 3 个用例。</li>
+  <li><strong>注意：</strong>10 题样本来自"初始答案确有分歧"的 GPQA 子集，属有偏难例集，<strong>不能用于估计整体准确率</strong>。"212 / 192 / 1 / 2 / 1 / 0 / 0" 这组数字见 <code>SPAN_HYBRID_TECHNICAL.md</code> §8，已与产物逐项核对一致。</li>
+</ul>
+
+<footer>
+本讲义基于 2026-10-07 的产物与代码状态生成。所有结论均可由附录列出的文件复现核对。<br>
+未对本仓库做任何代码改动。
+</footer>
+
+</div>
+</body>
+</html>
