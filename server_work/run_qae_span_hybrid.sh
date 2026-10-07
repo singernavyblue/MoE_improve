@@ -26,6 +26,10 @@ QWEN_MODEL=${QWEN_MODEL:-/root/autodl-tmp/hf/hub/models--Qwen--Qwen2.5-7B-Instru
 MATHSTRAL_MODEL=${MATHSTRAL_MODEL:-/root/autodl-tmp/hf/hub/models--mistralai--Mathstral-7B-v0.1/snapshots/ec3a48484ef241dfe03282edcb0f25e564923823}
 BIOMISTRAL_MODEL=${BIOMISTRAL_MODEL:-/root/autodl-tmp/hf/hub/models--BioMistral--BioMistral-7B/snapshots/9a11e1ffa817c211cbb52ee1fb312dc6b61b40a5}
 SPAN_CANDIDATE_LIMIT=${SPAN_CANDIDATE_LIMIT:-24}
+# Context is a fixed, program-owned one-hop packet around each D0 core span.
+# Set to 0 only for the sentence-only ablation; the Python entry point caps it
+# at two so a localizer cannot receive an unbounded reasoning chain.
+SPAN_CONTEXT_RADIUS=${SPAN_CONTEXT_RADIUS:-1}
 
 export HF_HOME=${HF_HOME:-/root/autodl-tmp/hf}
 export HF_HUB_OFFLINE=1
@@ -66,7 +70,7 @@ run_stage() {
   local -a stage_args=(
     --stage "$stage" --model "$model"
     --source "$SOURCE" --out "$OUT" --summary "$SUMMARY" --limit "$LIMIT"
-    --span-hybrid --span-candidate-limit "$SPAN_CANDIDATE_LIMIT"
+    --span-hybrid --span-candidate-limit "$SPAN_CANDIDATE_LIMIT" --span-context-radius "$SPAN_CONTEXT_RADIUS"
   )
   if [[ "$ONLY_DISAGREEMENT" == "1" ]]; then
     stage_args+=(--only-disagreement)

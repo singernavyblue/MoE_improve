@@ -729,20 +729,68 @@ def _span_snippet(span: dict[str, Any], limit: int = 300) -> str:
     return _trim(span.get("text", ""), limit)
 
 
+def _span_context_packet(
+    spans_by_id: dict[str, dict[str, Any]], core_ref: str, radius: int,
+) -> dict[str, Any] | None:
+    """Build a bounded, same-model evidence packet around one core span.
+
+    Candidate retrieval and D0 continue to select *only* the two core spans.
+    This helper merely makes immediately adjacent source text available for
+    grounding a field which is defined just before or after the calculation.
+    It never crosses a source-model boundary and retains every individual
+    span's original offsets for downstream audit.
+    """
+    core = spans_by_id.get(str(core_ref))
+    if not core:
+        return None
+    bounded_radius = max(0, min(int(radius), 2))
+    model = str(core.get("model", ""))
+    same_model = sorted(
+        (span for span in spans_by_id.values() if str(span.get("model", "")) == model),
+        key=lambda span: (int(span.get("start", 0)), str(span.get("span_id", ""))),
+    )
+    try:
+        center = next(index for index, span in enumerate(same_model) if str(span.get("span_id")) == str(core_ref))
+    except StopIteration:
+        return None
+    packet_spans = same_model[max(0, center - bounded_radius): center + bounded_radius + 1]
+    return {
+        "core_ref": str(core_ref),
+        "model": model,
+        "radius": bounded_radius,
+        "span_refs": [str(span.get("span_id")) for span in packet_spans],
+        "spans": packet_spans,
+    }
+
+
+def _render_context_packet(label: str, packet: dict[str, Any], limit: int = 520) -> str:
+    """Render program-owned context with a visible core marker for the model."""
+    core_ref = str(packet["core_ref"])
+    rendered = []
+    for span in packet["spans"]:
+        ref = str(span["span_id"])
+        marker = " [CORE]" if ref == core_ref else ""
+        rendered.append(f"{ref}{marker} [{span['model']}]: {_span_snippet(span, limit)}")
+    return f"{label} packet (same-source adjacent context; core={core_ref}):\n" + "\n".join(rendered)
+
+
 def _span_localize_prompt(
     question: str, spans_by_id: dict[str, dict[str, Any]], pairs: list[dict[str, Any]],
-    diagnosis: dict[str, Any] | None = None,
+    diagnosis: dict[str, Any] | None = None, context_radius: int = 1,
 ) -> str:
     rendered: list[str] = []
     for number, pair in enumerate(pairs, 1):
         refs = [str(ref) for ref in pair.get("span_refs", [])]
         if len(refs) != 2 or refs[0] not in spans_by_id or refs[1] not in spans_by_id:
             continue
-        left, right = (spans_by_id[refs[0]], spans_by_id[refs[1]])
+        left_packet = _span_context_packet(spans_by_id, refs[0], context_radius)
+        right_packet = _span_context_packet(spans_by_id, refs[1], context_radius)
+        if not left_packet or not right_packet:
+            continue
         rendered.append(
             f"Pair P{number} ({pair.get('retrieval_basis', 'retrieval')}; score={pair.get('retrieval_score', 0)}):\n"
-            f"{refs[0]} [{left['model']}]: {_span_snippet(left)}\n"
-            f"{refs[1]} [{right['model']}]: {_span_snippet(right)}"
+            f"{_render_context_packet('LEFT', left_packet)}\n"
+            f"{_render_context_packet('RIGHT', right_packet)}"
         )
     problem_type = str((diagnosis or {}).get("problem_type", "unknown"))
     category = str((diagnosis or {}).get("claim_category", "unknown"))
@@ -760,22 +808,24 @@ not solve the multiple-choice question, and do not choose an answer option.
 Upstream routing (an audit hint, not evidence): problem_type={problem_type};
 claim_category={category}. {route_hint}
 
-For one listed pair only, return CONFLICT only when both spans discuss the same
-entity and attribute under compatible stated conditions and their propositions
-cannot both be true.  Different scope, missing detail, uncertainty, alternative
-methods, a bare answer, or merely different wording is COMPATIBLE or
-UNDECIDABLE, not a conflict.  Retrieval score is not evidence.
+For one listed pair only, return CONFLICT only when both core spans discuss the
+same entity and attribute under compatible stated conditions and their
+propositions cannot both be true.  Adjacent text is context, not a new
+candidate: it may establish an entity, attribute, condition, or calculation
+result only for its own side.  Different scope, missing detail, uncertainty,
+alternative methods, a bare answer, or merely different wording is COMPATIBLE
+or UNDECIDABLE, not a conflict.  Retrieval score is not evidence.
 
-If and only if there is a real conflict, use the exact two span IDs from that
-listed pair; give compact entity/attribute/conditions and the two directions
-using only words/formulas supported by the spans.  For `left_entity_span`,
-`right_entity_span`, `left_attribute_span`, and `right_attribute_span`, copy a
-non-empty exact contiguous substring from the respective displayed span that
-supports the named field.  Do not use pronouns such as "it" or "they" as an
-entity.  If `conditions` is not `none`, also copy
-`left_condition_span` and `right_condition_span` from both spans; do not call
-conditions shared when one span does not state them.  Then write one standalone blind verification question that settles
-precisely that factual disagreement.
+If and only if there is a real conflict, `span_refs` must copy the two CORE
+IDs, in their displayed left/right order.  Every field must provide BOTH an
+exact contiguous text substring and the exact `*_ref` of the displayed span
+which contains it.  A left field may cite only the LEFT packet; a right field
+may cite only the RIGHT packet.  Do not cite a packet merely because it is
+nearby.  Do not use pronouns such as "it" or "they" as an entity.  The result
+fields must quote the proposition/result that supports each direction; numeric
+routes must quote the terminal calculation values.  If `conditions` is `none`,
+use `none` for both condition refs and spans.  Then write one standalone blind
+verification question that settles precisely that factual disagreement.
 It must not name models, spans, options, or answer letters.
 
 Question:
@@ -785,7 +835,7 @@ Candidate pairs:
 {chr(10).join(rendered) or 'None.'}
 
 Return JSON only:
-{{"status":"CONFLICT|COMPATIBLE|UNDECIDABLE","span_refs":["M0-S1","M1-S2"],"same_entity":true,"same_conditions":true,"entity":"canonical entity","attribute":"canonical attribute","conditions":"stated condition or none","left_entity_span":"exact left substring","right_entity_span":"exact right substring","left_attribute_span":"exact left substring","right_attribute_span":"exact right substring","left_condition_span":"exact left substring or none","right_condition_span":"exact right substring or none","left_direction":"increase|decrease|unchanged|present|absent|other","right_direction":"increase|decrease|unchanged|present|absent|other","conflict_type":"definition|assumption|formula|substitution|calculation|comparison","description":"incompatible propositions","why_decisive":"why resolving it can alter the result","target_question":"standalone factual or calculation question","verification_route":"numeric|symbolic|fact|necessity|counterexample"}}"""
+{{"status":"CONFLICT|COMPATIBLE|UNDECIDABLE","span_refs":["M0-S1","M1-S2"],"same_entity":true,"same_conditions":true,"entity":"canonical entity","attribute":"canonical attribute","conditions":"stated condition or none","left_entity_ref":"M0-S1","right_entity_ref":"M1-S2","left_entity_span":"exact left substring","right_entity_span":"exact right substring","left_attribute_ref":"M0-S1","right_attribute_ref":"M1-S2","left_attribute_span":"exact left substring","right_attribute_span":"exact right substring","left_condition_ref":"M0-S1 or none","right_condition_ref":"M1-S2 or none","left_condition_span":"exact left substring or none","right_condition_span":"exact right substring or none","left_result_ref":"M0-S1","right_result_ref":"M1-S2","left_result_span":"exact proposition or terminal calculation","right_result_span":"exact proposition or terminal calculation","left_direction":"increase|decrease|unchanged|present|absent|other","right_direction":"increase|decrease|unchanged|present|absent|other","conflict_type":"definition|assumption|formula|substitution|calculation|comparison","description":"incompatible propositions","why_decisive":"why resolving it can alter the result","target_question":"standalone factual or calculation question","verification_route":"numeric|symbolic|fact|necessity|counterexample"}}"""
 
 
 def _truthy_json(value: Any) -> bool:
@@ -811,28 +861,28 @@ def _span_route(value: Any) -> str:
 
 
 def _span_field_repair_prompt(
-    question: str, left: dict[str, Any], right: dict[str, Any],
+    question: str, left_packet: dict[str, Any], right_packet: dict[str, Any],
 ) -> str:
-    """Repair only grounding fields for an already selected potential pair."""
+    """Repair only citations/grounding fields for one fixed context packet pair."""
     return f"""You are repairing structured evidence fields, not deciding whether
-two propositions conflict.  Keep every field tied to the two immutable source
-spans below.  Return compact entity, attribute, and conditions plus exact
-contiguous supporting substrings from EACH corresponding span.  If a condition
-is not explicitly present in both, return conditions and both condition spans
-as `none`.  Do not use pronouns as entity.  Choose verification_route exactly
-from numeric, symbolic, fact, necessity, counterexample.
+two propositions conflict.  Keep every field tied to the immutable, fixed
+left/right context packets below.  For each entity, attribute, condition, and
+result return an exact contiguous supporting substring AND the ID of the span
+that contains it.  A left field may cite only the left packet and a right field
+only the right packet.  If a condition is not explicitly present in both,
+return conditions and both condition refs/spans as `none`.  Do not use
+pronouns as entity.  Choose verification_route exactly from numeric, symbolic,
+fact, necessity, counterexample.
 
 Question:
 {question}
 
-Left source span:
-{_span_snippet(left, 520)}
+{_render_context_packet('LEFT', left_packet, 520)}
 
-Right source span:
-{_span_snippet(right, 520)}
+{_render_context_packet('RIGHT', right_packet, 520)}
 
 Return JSON only:
-{{"entity":"canonical entity","attribute":"canonical attribute","conditions":"stated condition or none","left_entity_span":"exact left substring","right_entity_span":"exact right substring","left_attribute_span":"exact left substring","right_attribute_span":"exact right substring","left_condition_span":"exact left substring or none","right_condition_span":"exact right substring or none","verification_route":"numeric|symbolic|fact|necessity|counterexample"}}"""
+{{"entity":"canonical entity","attribute":"canonical attribute","conditions":"stated condition or none","left_entity_ref":"M0-S1","right_entity_ref":"M1-S1","left_entity_span":"exact left substring","right_entity_span":"exact right substring","left_attribute_ref":"M0-S1","right_attribute_ref":"M1-S1","left_attribute_span":"exact left substring","right_attribute_span":"exact right substring","left_condition_ref":"M0-S1 or none","right_condition_ref":"M1-S1 or none","left_condition_span":"exact left substring or none","right_condition_span":"exact right substring or none","left_result_ref":"M0-S1","right_result_ref":"M1-S1","left_result_span":"exact proposition or terminal calculation","right_result_span":"exact proposition or terminal calculation","verification_route":"numeric|symbolic|fact|necessity|counterexample"}}"""
 
 
 def _span_ref_render(record: dict[str, Any], refs: list[str]) -> str:
@@ -971,44 +1021,76 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                     args.model, _span_localize_prompt(
                         record["question"], spans_by_id, pairs,
                         diagnosis if args.diagnosis_gate else None,
+                        getattr(args, "span_context_radius", 1),
                     ),
                     700, ("status",), 7600 + pos,
                 )
                 refs = [str(ref) for ref in parsed.get("span_refs", []) if str(ref) in spans_by_id]
                 status = str(parsed.get("status", "UNDECIDABLE")).upper()
                 source_models = {str(spans_by_id[ref].get("model", "")) for ref in refs}
-                span_texts = [str(spans_by_id[ref].get("text", "")) for ref in refs]
+                context_packets = {
+                    ref: _span_context_packet(spans_by_id, ref, getattr(args, "span_context_radius", 1))
+                    for ref in refs
+                }
 
                 def structured_fields(value: dict[str, Any]) -> dict[str, Any]:
                     entity = _canonical_field(value.get("entity"))
                     attribute = _canonical_field(value.get("attribute"))
                     conditions = _canonical_field(value.get("conditions"))
-                    entity_anchors = [_trim(value.get("left_entity_span"), 300), _trim(value.get("right_entity_span"), 300)]
-                    attribute_anchors = [_trim(value.get("left_attribute_span"), 300), _trim(value.get("right_attribute_span"), 300)]
-                    condition_anchors = [_trim(value.get("left_condition_span"), 300), _trim(value.get("right_condition_span"), 300)]
-                    entity_grounded = (
-                        len(span_texts) == 2
-                        and all(_quote_contains_span(text, anchor) for text, anchor in zip(span_texts, entity_anchors))
-                        and all(_field_matches_span(entity, anchor) for anchor in entity_anchors)
-                    )
-                    attribute_grounded = (
-                        len(span_texts) == 2
-                        and all(_quote_contains_span(text, anchor) for text, anchor in zip(span_texts, attribute_anchors))
-                        and all(_field_matches_span(attribute, anchor) for anchor in attribute_anchors)
-                    )
+                    raw_directions = [
+                        _normalized_text(value.get("left_direction")).strip(),
+                        _normalized_text(value.get("right_direction")).strip(),
+                    ]
+                    directions = [
+                        _canonical_direction(value.get("left_direction")),
+                        _canonical_direction(value.get("right_direction")),
+                    ]
+
+                    def citations(kind: str, field: str | None = None) -> list[dict[str, Any]]:
+                        output: list[dict[str, Any]] = []
+                        for index, side in enumerate(("left", "right")):
+                            core_ref = refs[index] if index < len(refs) else ""
+                            packet = context_packets.get(core_ref) or {}
+                            output.append(_anchored_field(
+                                spans_by_id,
+                                set(packet.get("span_refs", [])),
+                                value.get(f"{side}_{kind}_ref"),
+                                value.get(f"{side}_{kind}_span"),
+                                field,
+                            ))
+                        return output
+
+                    entity_citations = citations("entity", entity)
+                    attribute_citations = citations("attribute", attribute)
+                    condition_citations = citations("condition", conditions)
+                    result_citations = citations("result")
+                    entity_grounded = len(refs) == 2 and all(item["field_match"] for item in entity_citations)
+                    attribute_grounded = len(refs) == 2 and all(item["field_match"] for item in attribute_citations)
                     conditions_grounded = conditions == "none" or (
-                        len(span_texts) == 2
-                        and all(_quote_contains_span(text, anchor) for text, anchor in zip(span_texts, condition_anchors))
-                        and all(_field_matches_span(conditions, anchor) for anchor in condition_anchors)
+                        len(refs) == 2 and all(item["field_match"] for item in condition_citations)
+                    )
+                    results_grounded = len(refs) == 2 and all(item["contained"] for item in result_citations)
+                    direction_results_grounded = len(refs) == 2 and all(
+                        _direction_anchor_is_grounded(direction, raw_direction, citation)
+                        for direction, raw_direction, citation in zip(directions, raw_directions, result_citations)
                     )
                     return {
                         "entity": entity, "attribute": attribute, "conditions": conditions,
-                        "entity_anchors": entity_anchors, "attribute_anchors": attribute_anchors,
-                        "condition_anchors": condition_anchors, "entity_grounded": entity_grounded,
-                        "attribute_grounded": attribute_grounded, "conditions_grounded": conditions_grounded,
+                        "entity_citations": entity_citations, "attribute_citations": attribute_citations,
+                        "condition_citations": condition_citations, "result_citations": result_citations,
+                        "entity_anchors": [item["text"] for item in entity_citations],
+                        "attribute_anchors": [item["text"] for item in attribute_citations],
+                        "condition_anchors": [item["text"] for item in condition_citations],
+                        "result_anchors": [item["text"] for item in result_citations],
+                        "entity_grounded": entity_grounded, "attribute_grounded": attribute_grounded,
+                        "conditions_grounded": conditions_grounded, "results_grounded": results_grounded,
+                        "direction_results_grounded": direction_results_grounded,
                         "entity_resolved": _subject_is_resolved(entity),
-                        "left_direction": _canonical_direction(value.get("left_direction")),
-                        "right_direction": _canonical_direction(value.get("right_direction")),
+                        "left_direction": directions[0], "right_direction": directions[1],
+                        "raw_directions": raw_directions,
+                        "context_span_refs": [
+                            list((context_packets.get(ref) or {}).get("span_refs", [])) for ref in refs
+                        ],
                     }
 
                 fields = structured_fields(parsed)
@@ -1017,17 +1099,17 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                 # results, may get one focused chance to repair omitted span
                 # anchors.  This never repairs a same-model pair, a changed
                 # pair, compatible detail, or an ungrounded entity.
-                raw_left_direction = _normalized_text(parsed.get("left_direction")).strip()
-                raw_right_direction = _normalized_text(parsed.get("right_direction")).strip()
+                raw_left_direction, raw_right_direction = fields["raw_directions"]
                 proposed_route = _span_route(parsed.get("verification_route"))
                 proposed_direction_conflict = _span_directions_incompatible(
                     fields["left_direction"], fields["right_direction"],
                     raw_left_direction, raw_right_direction,
-                )
+                ) and fields["direction_results_grounded"]
                 proposed_numeric_conflict = (
                     proposed_route == "numeric"
+                    and fields["results_grounded"]
                     and _numeric_anchor_results_incompatible(
-                        fields["attribute_anchors"][0], fields["attribute_anchors"][1],
+                        fields["result_anchors"][0], fields["result_anchors"][1],
                     )
                 )
                 recovery_eligible = (
@@ -1041,29 +1123,48 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                     and (not args.coreference_gate or fields["entity_resolved"])
                     and fields["entity_grounded"]
                     and (proposed_direction_conflict or proposed_numeric_conflict)
-                    and (not fields["attribute_grounded"] or not fields["conditions_grounded"])
+                    and (
+                        not fields["attribute_grounded"]
+                        or not fields["conditions_grounded"]
+                        or not fields["results_grounded"]
+                    )
                 )
                 if recovery_eligible:
                     repair_raw, repair = _call_json(
                         args.model,
-                        _span_field_repair_prompt(record["question"], spans_by_id[refs[0]], spans_by_id[refs[1]]),
+                        _span_field_repair_prompt(
+                            record["question"], context_packets[refs[0]], context_packets[refs[1]],
+                        ),
                         430,
-                        ("entity", "attribute", "conditions", "left_entity_span", "right_entity_span", "left_attribute_span", "right_attribute_span", "left_condition_span", "right_condition_span", "verification_route"),
+                        (
+                            "entity", "attribute", "conditions",
+                            "left_entity_ref", "right_entity_ref", "left_entity_span", "right_entity_span",
+                            "left_attribute_ref", "right_attribute_ref", "left_attribute_span", "right_attribute_span",
+                            "left_result_ref", "right_result_ref", "left_result_span", "right_result_span",
+                            "verification_route",
+                        ),
                         8600 + pos,
                     )
                     if repair:
                         parsed = {**parsed, **repair}
                         raw = json.dumps({"conflict_judgement": raw, "field_repair": repair_raw}, ensure_ascii=False)
                         fields = structured_fields(parsed)
+                        raw_left_direction, raw_right_direction = fields["raw_directions"]
                 entity = fields["entity"]
                 attribute = fields["attribute"]
                 conditions = fields["conditions"]
                 entity_anchors = fields["entity_anchors"]
                 attribute_anchors = fields["attribute_anchors"]
                 condition_anchors = fields["condition_anchors"]
+                result_anchors = fields["result_anchors"]
                 left_direction = fields["left_direction"]
                 right_direction = fields["right_direction"]
-                field_grounded = fields["entity_grounded"] and fields["attribute_grounded"] and fields["conditions_grounded"]
+                field_grounded = (
+                    fields["entity_grounded"]
+                    and fields["attribute_grounded"]
+                    and fields["conditions_grounded"]
+                    and fields["results_grounded"]
+                )
                 supplied_ctype = str(parsed.get("conflict_type", "")).lower()
                 ctype = next((part for part in supplied_ctype.split("|") if part in CONFLICT_TYPES), supplied_ctype)
                 route = _span_route(parsed.get("verification_route"))
@@ -1075,10 +1176,12 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                         left_direction, right_direction,
                         raw_left_direction, raw_right_direction,
                     )
+                    and fields["direction_results_grounded"]
                 )
                 numeric_anchor_conflict = (
                     route == "numeric"
-                    and _numeric_anchor_results_incompatible(attribute_anchors[0], attribute_anchors[1])
+                    and fields["results_grounded"]
+                    and _numeric_anchor_results_incompatible(result_anchors[0], result_anchors[1])
                 )
                 conflict_basis = (
                     "opposite_direction"
@@ -1102,10 +1205,14 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                     and _valid_target(target)
                 )
                 if valid:
+                    audit_refs = list(dict.fromkeys(
+                        ref for packet_refs in fields["context_span_refs"] for ref in packet_refs
+                    ))
                     structured_claims = []
-                    for ref, direction in zip(refs, (left_direction, right_direction)):
+                    for index, (ref, direction) in enumerate(zip(refs, (left_direction, right_direction))):
                         span = spans_by_id[ref]
                         structured_claims.append({
+                            "core_span_ref": ref,
                             "span_ref": ref,
                             "model": span["model"],
                             "start": span["start"],
@@ -1115,13 +1222,23 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                             "attribute": attribute,
                             "conditions": conditions,
                             "direction": direction,
-                            "entity_span": entity_anchors[0 if ref == refs[0] else 1],
-                            "attribute_span": attribute_anchors[0 if ref == refs[0] else 1],
-                            "condition_span": condition_anchors[0 if ref == refs[0] else 1],
+                            "context_span_refs": fields["context_span_refs"][index],
+                            "entity_span": entity_anchors[index],
+                            "attribute_span": attribute_anchors[index],
+                            "condition_span": condition_anchors[index],
+                            "result_span": result_anchors[index],
+                            "support": {
+                                "entity": fields["entity_citations"][index],
+                                "attribute": fields["attribute_citations"][index],
+                                "condition": fields["condition_citations"][index] if conditions != "none" else None,
+                                "result": fields["result_citations"][index],
+                            },
                         })
                     record["swarm_conflict"] = {
                         "status": "CONFLICT", "conflict_id": "D1", "span_refs": refs,
-                        "claim_refs": refs, "conflict_type": ctype, "description": _trim(parsed.get("description"), 500),
+                        "claim_refs": audit_refs, "context_span_refs": fields["context_span_refs"],
+                        "context_radius": max(0, min(int(getattr(args, "span_context_radius", 1)), 2)),
+                        "conflict_type": ctype, "description": _trim(parsed.get("description"), 500),
                         "why_decisive": _trim(parsed.get("why_decisive"), 450), "target_question": target,
                         "verification_route": route, "conflict_basis": conflict_basis,
                         "source_models": sorted(source_models),
@@ -1136,7 +1253,7 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                     record["qae_plan"] = [{
                         "evidence_id": "D1-E1", "type": route, "question": target,
                         "why": f"Span-localized {ctype} conflict D1 over {', '.join(refs)}",
-                        "origin": "span_hybrid_localized_conflict", "conflict_id": "D1", "claim_refs": refs,
+                        "origin": "span_hybrid_localized_conflict", "conflict_id": "D1", "claim_refs": audit_refs,
                         "diagnosis_id": diagnosis.get("diagnosis_id", "D0") if args.diagnosis_gate else None,
                         "answers": {}, "status": "PENDING",
                     }]
@@ -1427,6 +1544,57 @@ def _quote_contains_span(quote: str, span: Any) -> bool:
     """Require a non-empty contiguous provenance span, ignoring only whitespace."""
     cleaned_span = _trim(span, 300)
     return bool(cleaned_span and cleaned_span.lower() not in {"unknown", "none"} and cleaned_span.lower() in _trim(quote, 10_000).lower())
+
+
+def _anchored_field(
+    spans_by_id: dict[str, dict[str, Any]], allowed_refs: set[str], ref_value: Any,
+    anchor_value: Any, field: str | None = None,
+) -> dict[str, Any]:
+    """Validate one citation and retain its source-level absolute provenance.
+
+    ``allowed_refs`` comes from one side of a fixed context packet, not from
+    the entire chain.  Therefore an exact quote cannot be borrowed from a
+    distant sentence or another model merely because it happens to repeat a
+    word.  The returned offsets point at the exact field substring while the
+    parent span offsets remain separately available in the evidence ledger.
+    """
+    ref = str(ref_value or "").strip()
+    anchor = _trim(anchor_value, 300)
+    source = spans_by_id.get(ref)
+    contained = bool(
+        ref in allowed_refs
+        and source
+        and _quote_contains_span(str(source.get("text", "")), anchor)
+    )
+    local_start = -1
+    if contained and source:
+        source_text = str(source.get("text", ""))
+        local_start = source_text.find(anchor)
+        if local_start < 0:
+            local_start = source_text.lower().find(anchor.lower())
+    field_match = contained and (field is None or _field_matches_span(field, anchor))
+    return {
+        "span_ref": ref,
+        "text": anchor,
+        "contained": contained,
+        "field_match": field_match,
+        "source_start": int(source.get("start", 0)) if source else None,
+        "source_end": int(source.get("end", 0)) if source else None,
+        "anchor_start": (int(source.get("start", 0)) + local_start) if source and local_start >= 0 else None,
+        "anchor_end": (int(source.get("start", 0)) + local_start + len(anchor)) if source and local_start >= 0 else None,
+    }
+
+
+def _direction_anchor_is_grounded(direction: str, raw_direction: str, citation: dict[str, Any]) -> bool:
+    """Require an exact result citation to substantiate a directional claim."""
+    if not citation.get("contained"):
+        return False
+    anchor = str(citation.get("text", ""))
+    if direction in {"increase", "decrease", "unchanged", "present", "absent"}:
+        return _canonical_direction(anchor) == direction or _field_matches_span(direction, anchor)
+    if direction == "other":
+        return bool(raw_direction and _field_matches_span(raw_direction, anchor))
+    return False
 
 
 def _strict_normalization_item(
@@ -1986,6 +2154,7 @@ def _localized_summary(args: argparse.Namespace, records: list[dict[str, Any]]) 
         "hbr_dedup": args.hbr_dedup,
         "grounded_normalization": args.grounded_normalization,
         "diagnosis_gate": args.diagnosis_gate,
+        "span_context_radius": args.span_context_radius,
     }
     if args.span_hybrid:
         raw_spans = [span for record in records for span in record.get("swarm_spans", {}).get("spans", [])]
@@ -2010,7 +2179,14 @@ def _localized_summary(args: argparse.Namespace, records: list[dict[str, Any]]) 
             "materialized_structured_claim_count": sum(
                 len(record.get("swarm_conflict", {}).get("structured_claims", [])) for record in localized
             ),
-            "note": "All source text is preserved as offset spans; structured claims are materialized only for admitted cross-model conflict candidates.",
+            "context_expanded_localized_conflict_count": sum(
+                any(len(refs) > 1 for refs in record.get("swarm_conflict", {}).get("context_span_refs", []))
+                for record in localized
+            ),
+            "audited_context_span_count": sum(
+                len(record.get("swarm_conflict", {}).get("claim_refs", [])) for record in localized
+            ),
+            "note": "All source text is preserved as offset spans; D1 may cite only a bounded same-model adjacent packet, and every structured field retains its cited span plus absolute source offsets.",
         }
     _save_json(args.summary, summary)
     print(json.dumps(summary["conflict_localization"], ensure_ascii=False, indent=2), flush=True)
@@ -2033,6 +2209,7 @@ def main() -> None:
     parser.add_argument("--span-hybrid", action="store_true", help="use lossless source spans and selective cross-model conflict materialization instead of full claim extraction")
     parser.add_argument("--diagnosis-gate", action="store_true", help="require a typed, source-pair-grounded diagnosis before span conflict localization")
     parser.add_argument("--span-candidate-limit", type=int, default=24, help="maximum program-retrieved cross-model span pairs per answer-disagreement record")
+    parser.add_argument("--span-context-radius", type=int, choices=(0, 1, 2), default=1, help="same-model adjacent spans available per D1 side; core pair selection remains unchanged")
     parser.add_argument("--no-coreference-gate", dest="coreference_gate", action="store_false", help="ablation: permit standalone pronoun/article subjects")
     parser.add_argument("--no-field-span-gate", dest="field_span_gate", action="store_false", help="ablation: require exact spans but not field/span consistency")
     parser.add_argument("--no-hbr-dedup", dest="hbr_dedup", action="store_false", help="ablation: disable HBr alias/containment duplicate suppression")

@@ -79,7 +79,7 @@ gold 只用于离线评估，任何提示词和决策阶段均不读取它。
 | swarm_spans | spans | 程序生成的、带原始字符 offset 的完整 span 账本 |
 | swarm_span_candidates | span_candidates | 只含跨模型 span ID 对的可审计检索结果 |
 | swarm_diagnosis | diagnose | D0 的题型、差异归因、可验证性和唯一允许进入定位的 span 对 |
-| swarm_conflict | localize | 拒绝原因或通过严格验证的唯一 D1 冲突 |
+| swarm_conflict | localize | 拒绝原因或通过严格验证的唯一 D1 冲突；通过时保存 core pair、上下文包与字段级 offset |
 | qae_plan | localize | 只有已通过冲突门时才写入 D1-E1 盲验证任务 |
 | qae_ledger | verify / ledger | 多模型盲验证答案及其归一化证据等级 |
 | swarm_guard | guard | 证据是否能直接裁决 D1 的最终授权结果 |
@@ -114,6 +114,11 @@ gold 只用于离线评估，任何提示词和决策阶段均不读取它。
 ~~~
 
 start:end、quote、entity_span、attribute_span 和可选的 condition_span 共同构成审计链。
+
+对于需要把“实体定义”和“计算结果”组合起来审计的 D1，记录还会保存
+`context_span_refs` 与每个字段的 `support`。每个 support 同时含其
+`span_ref`、父 span 的 `source_start/source_end` 和精确子串的
+`anchor_start/anchor_end`；因此上下文不会被拼成一段失去来源的文本。
 
 ## 4. 处理阶段
 
@@ -175,6 +180,20 @@ score = 共享词 lexical score + 稀有共享 token 的加权 + 数字/公式/�
 8. 两侧方向必须由程序判定为**不相容**。
 
 通过后才写入 D1 和 D1-E1；否则仅记录 NO_VALID_SPAN_CONFLICT 及原始响应以供审计。
+
+#### 相邻上下文 / 多 span Claim
+
+核心候选仍严格是 D0 选中的两条跨模型 span；系统没有把检索候选扩展为
+任意推理链。定位前，程序会为 core pair 的左右两侧分别构造一个**同一来源模型**
+的固定相邻包：默认核心 span 加前后各一条（`--span-context-radius=1`，最大为 2）。
+
+- `span_refs` 始终保留两个 core ID；
+- entity、attribute、condition、result 各自都必须输出 `*_ref + *_span`；
+- 左字段只能引用左包、右字段只能引用右包，引用包外、另一模型或非连续文本会被程序拒绝；
+- 数值冲突在各自 `result_span` 的终值上判断，实体/属性仍须由独立的精确锚点支持；
+- 传给 directness guard 的 `claim_refs` 是两个完整审计包，而不是脱离定义的单句结果。
+
+这个设计提高了“相邻定义 + 计算结果”型 Claim 的召回，但没有放宽 exact-span、跨模型、同条件或方向/终值不相容门。
 
 #### 一次受限修复
 
