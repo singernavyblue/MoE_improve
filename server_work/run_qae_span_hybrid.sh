@@ -88,15 +88,22 @@ else
   start_server "$QWEN_MODEL" Qwen/Qwen2.5-7B-Instruct
 fi
 run_stage localize qwen
-for spec in \
-  "qwen:$QWEN_MODEL:Qwen/Qwen2.5-7B-Instruct" \
-  "mathstral:$MATHSTRAL_MODEL:Mathstral-7B" \
-  "biomedical_llama:$BIOMISTRAL_MODEL:BioMistral-7B"; do
-  IFS=: read -r key model served <<< "$spec"
-  start_server "$model" "$served"
-  run_stage verify "$key"
-done
-start_server "$QWEN_MODEL" Qwen/Qwen2.5-7B-Instruct
+if run_stage verify_needed qwen; then
+  for spec in \
+    "qwen:$QWEN_MODEL:Qwen/Qwen2.5-7B-Instruct" \
+    "mathstral:$MATHSTRAL_MODEL:Mathstral-7B" \
+    "biomedical_llama:$BIOMISTRAL_MODEL:BioMistral-7B"; do
+    IFS=: read -r key model served <<< "$spec"
+    start_server "$model" "$served"
+    run_stage verify "$key"
+  done
+  # The last verifier may be non-Qwen; the remaining stages use Qwen.
+  start_server "$QWEN_MODEL" Qwen/Qwen2.5-7B-Instruct
+else
+  # Qwen is still serving from diagnosis/localization, so avoid a needless
+  # model restart when there is no D1 evidence to verify.
+  echo "[verify] skipped=no_pending_d1_evidence"
+fi
 run_stage ledger qwen
 run_stage guard qwen
 run_stage clean qwen

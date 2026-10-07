@@ -916,6 +916,13 @@ def run_span_verify(args: argparse.Namespace, records: list[dict[str, Any]]) -> 
             )
 
 
+def run_verify_needed(records: list[dict[str, Any]]) -> bool:
+    """Return whether any admitted D1 still needs blind verifier model calls."""
+    needed = any(record.get("qae_plan") for record in records)
+    print(f"[verify-needed] pending_evidence={int(needed)}", flush=True)
+    return needed
+
+
 def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -> None:
     """Judge candidate span pairs and materialise claims only for real conflicts."""
     for pos, record in enumerate(records, 1):
@@ -1006,11 +1013,23 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
 
                 fields = structured_fields(parsed)
                 # A valid cross-model conflict proposal with opposite stated
-                # directions may get one focused chance to repair omitted span
+                # directions, or with incompatible grounded numeric terminal
+                # results, may get one focused chance to repair omitted span
                 # anchors.  This never repairs a same-model pair, a changed
-                # pair, a shared-direction "conflict", or ungrounded entity.
+                # pair, compatible detail, or an ungrounded entity.
                 raw_left_direction = _normalized_text(parsed.get("left_direction")).strip()
                 raw_right_direction = _normalized_text(parsed.get("right_direction")).strip()
+                proposed_route = _span_route(parsed.get("verification_route"))
+                proposed_direction_conflict = _span_directions_incompatible(
+                    fields["left_direction"], fields["right_direction"],
+                    raw_left_direction, raw_right_direction,
+                )
+                proposed_numeric_conflict = (
+                    proposed_route == "numeric"
+                    and _numeric_anchor_results_incompatible(
+                        fields["attribute_anchors"][0], fields["attribute_anchors"][1],
+                    )
+                )
                 recovery_eligible = (
                     status == "CONFLICT"
                     and len(refs) == 2
@@ -1021,10 +1040,7 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                     and fields["entity"] not in {"none", "unknown"}
                     and (not args.coreference_gate or fields["entity_resolved"])
                     and fields["entity_grounded"]
-                    and _span_directions_incompatible(
-                        fields["left_direction"], fields["right_direction"],
-                        raw_left_direction, raw_right_direction,
-                    )
+                    and (proposed_direction_conflict or proposed_numeric_conflict)
                     and (not fields["attribute_grounded"] or not fields["conditions_grounded"])
                 )
                 if recovery_eligible:
@@ -1052,6 +1068,23 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                 ctype = next((part for part in supplied_ctype.split("|") if part in CONFLICT_TYPES), supplied_ctype)
                 route = _span_route(parsed.get("verification_route"))
                 target = str(parsed.get("target_question", "")).strip()
+                direction_conflict = (
+                    left_direction != "unknown"
+                    and right_direction != "unknown"
+                    and _span_directions_incompatible(
+                        left_direction, right_direction,
+                        raw_left_direction, raw_right_direction,
+                    )
+                )
+                numeric_anchor_conflict = (
+                    route == "numeric"
+                    and _numeric_anchor_results_incompatible(attribute_anchors[0], attribute_anchors[1])
+                )
+                conflict_basis = (
+                    "opposite_direction"
+                    if direction_conflict else "numeric_terminal_value_mismatch"
+                    if numeric_anchor_conflict else "none"
+                )
                 valid = (
                     status == "CONFLICT"
                     and len(refs) == 2
@@ -1062,12 +1095,7 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                     and entity not in {"none", "unknown"}
                     and attribute not in {"none", "unknown"}
                     and (not args.coreference_gate or fields["entity_resolved"])
-                    and left_direction != "unknown"
-                    and right_direction != "unknown"
-                    and _span_directions_incompatible(
-                        left_direction, right_direction,
-                        raw_left_direction, raw_right_direction,
-                    )
+                    and (direction_conflict or numeric_anchor_conflict)
                     and field_grounded
                     and ctype in CONFLICT_TYPES
                     and route in ROUTES
@@ -1095,7 +1123,8 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                         "status": "CONFLICT", "conflict_id": "D1", "span_refs": refs,
                         "claim_refs": refs, "conflict_type": ctype, "description": _trim(parsed.get("description"), 500),
                         "why_decisive": _trim(parsed.get("why_decisive"), 450), "target_question": target,
-                        "verification_route": route, "source_models": sorted(source_models),
+                        "verification_route": route, "conflict_basis": conflict_basis,
+                        "source_models": sorted(source_models),
                         "diagnosis_id": diagnosis.get("diagnosis_id", "D0") if args.diagnosis_gate else None,
                         "problem_type": diagnosis.get("problem_type", "unknown") if args.diagnosis_gate else "unknown",
                         "diagnosis_type": diagnosis.get("diagnosis_type", "unknown") if args.diagnosis_gate else "unknown",
@@ -1288,6 +1317,32 @@ def _span_directions_incompatible(
         re.fullmatch(r"not\s+(.+)", raw[0]) and raw[0][4:] == raw[1]
         or re.fullmatch(r"not\s+(.+)", raw[1]) and raw[1][4:] == raw[0]
     )
+
+
+def _terminal_numeric_result(value: Any) -> float | None:
+    """Extract an explicitly written terminal decimal result, if one exists.
+
+    This intentionally declines symbolic equivalence, scientific notation, and
+    bare inputs: they need a symbolic/numeric verifier rather than a heuristic
+    contradiction gate.  It is only a narrow escape hatch for equations such
+    as ``7.5 + 0.3 = 7.8`` versus ``10^0.3 ≈ 2.0``.
+    """
+    text = _normalized_text(value).replace("≈", "~")
+    if not re.search(r"(?:=|~|\b(?:equals|is)\b)", text):
+        return None
+    values = re.findall(r"(?<![a-z])[-+]?\d+(?:\.\d+)?(?![a-z])", text)
+    if not values:
+        return None
+    try:
+        return float(values[-1])
+    except ValueError:
+        return None
+
+
+def _numeric_anchor_results_incompatible(left: Any, right: Any) -> bool:
+    """Allow a numeric D1 only for two distinct grounded terminal decimals."""
+    first, second = _terminal_numeric_result(left), _terminal_numeric_result(right)
+    return first is not None and second is not None and first != second
 
 
 def _comparison_slots(parsed: dict[str, Any], fields: dict[str, str]) -> dict[str, str]:
@@ -1950,7 +2005,7 @@ def _localized_summary(args: argparse.Namespace, records: list[dict[str, Any]]) 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--stage", required=True, choices=("hard", "claims", "spans", "span_candidates", "diagnose", "normalize", "localize", "verify", "ledger", "guard", "clean", "rebuttal", "pool", "summary"))
+    parser.add_argument("--stage", required=True, choices=("hard", "claims", "spans", "span_candidates", "diagnose", "normalize", "localize", "verify_needed", "verify", "ledger", "guard", "clean", "rebuttal", "pool", "summary"))
     parser.add_argument("--model", choices=PARTICIPANTS, default="qwen")
     parser.add_argument("--source", default="outputs/qae_pooling_full_source_hard_v2.json")
     parser.add_argument("--out", default="outputs/qae_localized_disagreement_40.json")
@@ -1978,6 +2033,9 @@ def main() -> None:
     elif args.stage == "diagnose": run_diagnose(args, records)
     elif args.stage == "normalize": run_normalize(args, records)
     elif args.stage == "localize": run_span_localize(args, records) if args.span_hybrid else run_localize(args, records)
+    elif args.stage == "verify_needed":
+        if not run_verify_needed(records):
+            raise SystemExit(1)
     elif args.stage == "verify": run_span_verify(args, records) if args.span_hybrid else run_verify(args, records)
     elif args.stage == "ledger": run_ledger(args, records)
     elif args.stage == "guard": run_guard(args, records)

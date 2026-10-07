@@ -500,6 +500,23 @@ def run_solve(args: argparse.Namespace, records: list[dict[str, Any]], field: st
             _save_json(args.out, records)
             print(f"[{field}] {pos}/{len(records)} idx={record['idx']} answer={hard_answer} source=HARD", flush=True)
             continue
+        if getattr(args, "diagnosis_gate", False) and not any(
+            item.get("status") in EVIDENCE_GRADES for item in _all_evidence(record)
+        ):
+            # In the diagnosis-gated route, a clean/rebuttal re-solve without
+            # admissible evidence cannot authorize a later answer replacement.
+            # Preserve the frozen baseline instead of spending a model call on
+            # a result that the pooler is required to discard.
+            pooled = record.get("stored_goa_answer")
+            record[field] = {
+                "model": "programmatic",
+                "answer": pooled if pooled in LETTERS else None,
+                "reason": "skipped_no_valid_ledger_evidence",
+                "raw": "",
+            }
+            _save_json(args.out, records)
+            print(f"[{field}] {pos}/{len(records)} idx={record['idx']} skipped=no_valid_ledger_evidence", flush=True)
+            continue
         raw, parsed = _call_json(args.model, _solve_prompt(record, rebuttal), 700, ("answer", "reason"), 5000 + pos)
         record[field] = {"model": args.model, "answer": _letter(parsed.get("answer")) or _letter(raw), "reason": str(parsed.get("reason", "")), "raw": raw}
         _save_json(args.out, records)
@@ -554,6 +571,25 @@ Return JSON only:
 def run_pool(args: argparse.Namespace, records: list[dict[str, Any]]) -> None:
     for pos, record in enumerate(records, 1):
         hard_answer = _decisive_hard_answer(record)
+        pooled = record.get("stored_goa_answer")
+        if getattr(args, "diagnosis_gate", False) and not hard_answer and pooled in LETTERS and not any(
+            item.get("status") in EVIDENCE_GRADES for item in _all_evidence(record)
+        ):
+            # This is the final safety fallback for a D0/D1 route with no
+            # admissible direct ledger evidence.  It is deliberately before
+            # the pooler call, because a stochastic response could not alter
+            # the answer under the replacement policy.
+            record["qae_pooler"] = {
+                "model": "programmatic", "answer": pooled,
+                "viable_candidates": [pooled], "excluded_candidates": [],
+                "evidence_ids": [], "invalid_evidence_ids": [],
+                "reason": "retain_A_pool_no_valid_ledger_evidence", "raw": "",
+            }
+            record["qae_final_answer"] = pooled
+            record["qae_final_reason"] = "retain_A_pool_no_valid_ledger_evidence"
+            _save_json(args.out, records)
+            print(f"[pool] {pos}/{len(records)} idx={record['idx']} final={pooled} source=A_POOL_NO_EVIDENCE", flush=True)
+            continue
         candidates = _candidate_letters(record) + [record.get("qae_clean", {}).get("answer"), record.get("qae_rebuttal", {}).get("answer"), hard_answer]
         candidates = list(dict.fromkeys(x for x in candidates if x in LETTERS))
         viable = [x for x in candidates if not _contradicted(record, x)]
@@ -568,7 +604,6 @@ def run_pool(args: argparse.Namespace, records: list[dict[str, Any]]) -> None:
             continue
         raw, parsed = _call_json(args.model, _pool_prompt(record, viable), 520, ("answer", "reason", "evidence_ids"), 6000 + pos)
         choice = _letter(parsed.get("answer")) or _letter(raw)
-        pooled = record.get("stored_goa_answer")
         raw_cited = {str(x) for x in parsed.get("evidence_ids", []) if isinstance(x, str)}
         ledger_ids = {str(item.get("evidence_id")) for item in _all_evidence(record) if item.get("status") in EVIDENCE_GRADES}
         cited = raw_cited & ledger_ids

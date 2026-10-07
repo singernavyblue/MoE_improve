@@ -195,6 +195,8 @@ _field_matches_span 支持三种证据匹配：
 - unchanged ↔ increase/decrease；
 - 小型受控定性反向词表，例如 continuous ↔ discontinuous、active ↔ inactive。
 
+数值/计算路线还有一个窄例外：在同一实体、属性、条件且两侧属性锚点均已精确落回原文时，形如 `7.5 + 0.3 = 7.8` 与 `10^0.3 ≈ 2.0` 的**终值 decimal 不相等**可作为冲突依据。它不尝试判断一般公式等价性、科学计数法或未给出结果的表达式；这些仍须走符号/数值验证，不能由词面差异放行。
+
 因此两个都为 increase 的表述，即使局部措辞不同，也不会触发定位器或验证调用。
 
 验证路线也使用受控映射：
@@ -248,11 +250,11 @@ bash run_qae_span_hybrid.sh
 hard → spans → span_candidates
 → diagnose(Qwen, D0)
 → localize(Qwen, 仅 D0 授权的 pair)
-→ verify(Qwen, Mathstral, BioMistral)
+→ verify_needed → verify(Qwen, Mathstral, BioMistral；仅存在 D1-E1 时)
 → ledger → guard → clean → rebuttal → pool → summary
 ~~~
 
-它在单 GPU 上顺序装载模型，HF_HUB_OFFLINE=1 以避免评测时下载模型。
+它在单 GPU 上顺序装载模型，HF_HUB_OFFLINE=1 以避免评测时下载模型。`verify_needed` 会在没有 D1 盲验证任务时跳过三次验证模型加载；诊断门启用时，clean、rebuttal、pool 对无 HARD/STRONG ledger 的记录也会程序化保留 A-pool，不再生成必然被丢弃的随机复解。
 
 ### 6.2 单阶段恢复
 

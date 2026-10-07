@@ -106,6 +106,34 @@ class DiagnosisStateTests(unittest.TestCase):
         self.assertEqual(self.record["swarm_conflict"]["status"], "SKIPPED_DIAGNOSIS")
         self.assertEqual(self.record["qae_plan"], [])
 
+    def test_grounded_numeric_terminal_values_can_be_incompatible(self) -> None:
+        self.assertTrue(
+            qae._numeric_anchor_results_incompatible(
+                "7.5 + 0.3 = 7.8", "10^{0.3} approximately equals 2.0",
+            )
+        )
+        self.assertFalse(qae._numeric_anchor_results_incompatible("2.0 = 2.0", "2 = 2"))
+
+    def test_no_evidence_route_skips_resolves_and_retains_a_pool(self) -> None:
+        record = _record()
+        record.update({
+            "stored_goa_answer": "A",
+            "qae_plan": [],
+            "qae_ledger": {},
+            "qae_clean": {},
+            "qae_rebuttal": {},
+            "qae_pooler": {},
+            "qae_final_answer": None,
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(diagnosis_gate=True, out=str(Path(directory) / "state.json"))
+            self.assertFalse(qae.run_verify_needed([record]))
+            qae.run_solve(args, [record], "qae_clean", False)
+            qae.run_pool(args, [record])
+        self.assertEqual(record["qae_clean"]["reason"], "skipped_no_valid_ledger_evidence")
+        self.assertEqual(record["qae_final_answer"], "A")
+        self.assertEqual(record["qae_final_reason"], "retain_A_pool_no_valid_ledger_evidence")
+
 
 if __name__ == "__main__":
     unittest.main()
