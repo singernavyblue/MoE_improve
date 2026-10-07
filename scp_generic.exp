@@ -1,0 +1,21 @@
+#!/usr/bin/expect -f
+# Usage: scp_generic.exp <port> <password> <src> <dst>
+set timeout 300
+set port [lindex $argv 0]
+set pw   [lindex $argv 1]
+set src  [lindex $argv 2]
+set dst  [lindex $argv 3]
+spawn scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -P $port $src $dst
+expect {
+    -re "assword:" {
+        send -- "$pw\r"
+        exp_continue
+    }
+    -re "yes/no" {
+        send -- "yes\r"
+        exp_continue
+    }
+    eof
+}
+catch wait result
+exit [lindex $result 3]

@@ -1,0 +1,16 @@
+#!/usr/bin/expect -f
+# Usage: scp_get_host.exp <host> <port> <password> <remote> <local>
+set timeout 600
+set host [lindex $argv 0]
+set port [lindex $argv 1]
+set pw   [lindex $argv 2]
+set rem  [lindex $argv 3]
+set loc  [lindex $argv 4]
+spawn scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -P $port root@$host:$rem $loc
+expect {
+    -re "assword:" { send -- "$pw\r"; exp_continue }
+    -re "yes/no" { send -- "yes\r"; exp_continue }
+    eof
+}
+catch wait result
+exit [lindex $result 3]

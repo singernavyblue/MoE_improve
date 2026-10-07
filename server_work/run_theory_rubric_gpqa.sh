@@ -1,0 +1,13 @@
+#!/bin/bash
+# Controlled experiment: theory-grounded judge rubric (Toulmin + SOLO + Facione)
+# vs pairwise-margin baseline (41.41%).
+# ONLY the judge rubric text changes; everything else is byte-identical to baseline.
+cd /root/GoA
+source /root/miniconda3/etc/profile.d/conda.sh
+conda activate goa
+export HF_HOME=/root/autodl-tmp/hf
+export HF_HUB_OFFLINE=1
+
+python main.py --data GPQA --eval test --reference_models qwen,qwen_coder,mathstral,biomedical_llama,finance_llama,saul --meta_llm qwen --graph_pooling_method mean --top_k 3 --threshold 0.05 --rounds 1 --temperature 0.7 --max_tokens 800 --num_proc 80 --seed 0 --edge_mode pairwise_margin_theory 2>&1 | tee /root/goa_theory_rubric.log | grep -E "Overall Accuracy|Saving outputs|Error|Traceback"
+
+echo "THEORY_RUBRIC_DONE"

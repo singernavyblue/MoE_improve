@@ -1,0 +1,15 @@
+#!/usr/bin/expect -f
+# Usage: ssh_scp.exp <src> <dst>
+set timeout 120
+set src [lindex $argv 0]
+set dst [lindex $argv 1]
+spawn scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P 37001 $src $dst
+expect {
+    -re "assword:" {
+        send -- "V+XGI1jnUCNv\r"
+        exp_continue
+    }
+    eof
+}
+catch wait result
+exit [lindex $result 3]

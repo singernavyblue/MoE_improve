@@ -1,0 +1,20 @@
+#!/usr/bin/expect -f
+# Usage: ssh_generic.exp <port> <password> <remote command>
+set timeout 180
+set port [lindex $argv 0]
+set pw   [lindex $argv 1]
+set cmd  [lindex $argv 2]
+spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -p $port root@connect.nmb1.seetacloud.com $cmd
+expect {
+    -re "assword:" {
+        send -- "$pw\r"
+        exp_continue
+    }
+    -re "yes/no" {
+        send -- "yes\r"
+        exp_continue
+    }
+    eof
+}
+catch wait result
+exit [lindex $result 3]

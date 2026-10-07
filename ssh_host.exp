@@ -1,0 +1,21 @@
+#!/usr/bin/expect -f
+# Usage: ssh_host.exp <host> <port> <password> <remote command>
+set timeout 600
+set host [lindex $argv 0]
+set port [lindex $argv 1]
+set pw   [lindex $argv 2]
+set cmd  [lindex $argv 3]
+spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -p $port root@$host $cmd
+expect {
+    -re "assword:" {
+        send -- "$pw\r"
+        exp_continue
+    }
+    -re "yes/no" {
+        send -- "yes\r"
+        exp_continue
+    }
+    eof
+}
+catch wait result
+exit [lindex $result 3]

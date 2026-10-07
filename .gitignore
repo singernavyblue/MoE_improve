@@ -1,0 +1,34 @@
+# Generated experiment artifacts and logs
+outputs/
+server_work/results/
+*.log
+*.inspect.ndjson
+
+# Python / editor / local tooling
+__pycache__/
+*.py[cod]
+.DS_Store
+.artifact-node/
+node_modules
+.idea/
+.vscode/
+
+# Local secrets and runtime configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Source files that currently contain a plaintext API key.
+# They must be migrated to environment-variable configuration before publishing.
+server_work/divergence_calib.py
+server_work/run_judge_adjudicate_198.sh
+server_work/run_judge_adjudicate_40.sh
+server_work/run_judge_adjudicate_tier3.sh
+server_work/run_paired_A_quick.sh
+server_work/run_socratic_40.sh
+server_work/run_socratic_v2_40.sh
+work/judge_4dim_explicit_strong.py
+work/judge_ablation_smoke.py
+work/test_deepseek.py

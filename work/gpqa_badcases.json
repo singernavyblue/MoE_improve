@@ -1,0 +1,22 @@
+[
+ {
+  "question": "trans-cinnamaldehyde was treated with methylmagnesium bromide, forming product 1.\n\n1 was treated with pyridinium chlorochromate, forming product 2.\n\n3 was treated with (dimethyl(oxo)-l6-sulfaneylidene)methane in DMSO at elevated temperature, forming product 3.\n\nhow many carbon atoms are there in product 3?\n\nThe options are: (A) 12 (B) 14 (C) 11 (D) 10",
+  "gold_answer": "C"
+ },
+ {
+  "question": "A quantum mechanical particle of mass m moves in two dimensions in the following potential, as a function of the polar coordinates (r,θ):\n V (r, θ) = 1/2 kr^2 + 3/2 kr^2 cos^2(θ)\nFind the energy spectrum.\nHint: Write the potential in cartesian coordinates. \n\n\nThe options are: (A) E = (2n_x+n_y+3/2)ℏ*sqrt(k/m) (B) E = (n_x+n_y+5/2) hbar*sqrt(k/m)) (C) E = (n_x+n_y+1/2) hbar*sqrt(k/m)) (D) E = (n_x+3*n_y+1) hbar*sqrt(k/m))",
+  "gold_answer": "A"
+ },
+ {
+  "question": "All the following statements about the molecular biology of Severe Acute Respiratory Syndrome Coronavirus 2 (SARS‑CoV‑2) are incorrect except\n\nThe options are: (A) Nsp14 is a structural, bimodular protein composed of ExoN and MTase domain with exoribonuclease activity. (B) Subgenomic RNA transcription is a continuous process and is facilitated by shared transcription regulatory sequences. (C) Programmed +1 ribosomal frameshifting helps the ribosome to continue translating into Orf1b, producing pp1ab. (D) Structural and accessory proteins can be produced with the help of subgenomic RNAs that have the same leader sequences on the 5' end.",
+  "gold_answer": "D"
+ },
+ {
+  "question": "If an equimolar mixture X of two liquids, which decolorizes bromine water, is treated with platinum when heated, then an equimolar mixture Y of two other liquids is formed as a result of disproportionation, which does not decolorize bromine water. Hydrogenation of both mixture X and mixture Y in the presence of platinum under rather severe conditions gives only one substance, a certain hydrocarbon Z (mass fraction of hydrogen is 14.28%), which is a constituent of mixture Y and widely used as a solvent. Substance Z does not react further with hydrogen. There are no conjugated multiple bonds in the molecules of the compounds of mixture X. \nIndicate the total number of hydrogen atoms in two liquids of mixture X.\n\n\nThe options are: (A) 16 (B) 18 (C) 12 (D) 22",
+  "gold_answer": "B"
+ },
+ {
+  "question": "(S)-4-hydroxycyclohex-2-en-1-one is treated with tert-Butyldimethylsilyl chloride and triethylamine, forming product 1.\n\n1 is treated with Ph2CuLi at low temperature, followed by benzyl bromide, forming product 2.\n\n2 is treated with LDA and iodomethane at low temperature, forming product 3.\n\nProduct 3 is treatd with aqueous HCl, forming final product 4. what is the structure of product 4?\n\nThe options are: (A) (2S,3S,4S)-2-benzyl-4-hydroxy-2-methyl-3-phenylcyclohexan-1-one (B) (2S,3R,4S,6S)-2-benzyl-4-hydroxy-6-methyl-3-phenylcyclohexan-1-one (C) (2R,3R,4S)-2-benzyl-4-hydroxy-2-methyl-3-phenylcyclohexan-1-one (D) (1S,2S,4S)-1-(benzyloxy)-2-methyl-1,2,3,4-tetrahydro-[1,1'-biphenyl]-4-ol",
+  "gold_answer": "B"
+ }
+]

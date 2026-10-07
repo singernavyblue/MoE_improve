@@ -1,0 +1,14 @@
+#!/usr/bin/expect -f
+# Usage: ssh_run.exp "<remote command>"
+set timeout 120
+set cmd [lindex $argv 0]
+spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 37001 root@connect.nmb1.seetacloud.com $cmd
+expect {
+    -re "assword:" {
+        send -- "V+XGI1jnUCNv\r"
+        exp_continue
+    }
+    eof
+}
+catch wait result
+exit [lindex $result 3]
