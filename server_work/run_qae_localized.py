@@ -49,6 +49,23 @@ from run_qae_pooling import (
 CLAIM_TYPES = {"definition", "assumption", "formula", "substitution", "calculation", "comparison", "option_mapping"}
 CONFLICT_TYPES = CLAIM_TYPES
 ROUTES = {"numeric", "symbolic", "fact", "necessity", "counterexample"}
+# These are routing labels, not a closed ontology for all future claims.  A
+# diagnosis may put an unfamiliar but grounded category into ``new`` and
+# preserve its label for later review instead of forcing it into a math-only
+# claim schema.
+PROBLEM_TYPES = {
+    "numeric_calculation", "formula_derivation", "causal_mechanism",
+    "conditional_logic", "fact_entity_relation", "open_ended",
+}
+DIAGNOSIS_TYPES = {
+    "formula_or_calculation_error", "fact_or_concept_error",
+    "condition_or_scope_mismatch", "entity_confusion",
+    "evidence_insufficient", "no_verifiable_conflict",
+}
+CLAIM_CATEGORIES = {
+    "quantitative_relation", "causal_mechanism", "conditional_constraint",
+    "entity_relation", "new",
+}
 _VLLM_CHAT_ENDPOINT = "http://127.0.0.1:8000/v1/chat/completions"
 _VLLM_SERVED_MODELS = {
     "qwen": "Qwen/Qwen2.5-7B-Instruct",
@@ -76,6 +93,7 @@ def _init(args: argparse.Namespace) -> list[dict[str, Any]]:
         for record in records:
             record.setdefault("swarm_spans", {})
             record.setdefault("swarm_span_candidates", {})
+            record.setdefault("swarm_diagnosis", {})
         return records
     source = _load(args.source)
     if args.only_disagreement:
@@ -89,7 +107,7 @@ def _init(args: argparse.Namespace) -> list[dict[str, Any]]:
             "qae_clean": {}, "qae_rebuttal": {}, "qae_pooler": {},
             "qae_final_answer": None, "qae_final_reason": "",
             "swarm_claims": {}, "swarm_normalization": {}, "swarm_conflict": {}, "swarm_guard": {},
-            "swarm_spans": {}, "swarm_span_candidates": {},
+            "swarm_spans": {}, "swarm_span_candidates": {}, "swarm_diagnosis": {},
         })
         records.append(item)
     _save_json(args.out, records)
@@ -541,12 +559,170 @@ def run_span_candidates(args: argparse.Namespace, records: list[dict[str, Any]])
         )
 
 
+def _diagnosis_category(problem_type: str) -> str:
+    """Choose a stable initial category when the model omits one.
+
+    The category is an audit/routing hint only.  ``new`` remains available so
+    an unfamiliar mechanism is recorded for later ontology review rather than
+    being silently coerced into one of these initial buckets.
+    """
+    return {
+        "numeric_calculation": "quantitative_relation",
+        "formula_derivation": "quantitative_relation",
+        "causal_mechanism": "causal_mechanism",
+        "conditional_logic": "conditional_constraint",
+        "fact_entity_relation": "entity_relation",
+    }.get(problem_type, "new")
+
+
+def _diagnosis_prompt(question: str, spans_by_id: dict[str, dict[str, Any]], pairs: list[dict[str, Any]]) -> str:
+    """Ask for routing and error attribution before conflict localization.
+
+    This role never sees option letters or frozen answers.  It may select only
+    a program-retrieved span pair, which makes an affirmative diagnosis an
+    auditable proposal rather than a free-form Claim extraction.
+    """
+    rendered: list[str] = []
+    for number, pair in enumerate(pairs, 1):
+        refs = [str(ref) for ref in pair.get("span_refs", [])]
+        if len(refs) != 2 or any(ref not in spans_by_id for ref in refs):
+            continue
+        left, right = (spans_by_id[refs[0]], spans_by_id[refs[1]])
+        rendered.append(
+            f"Pair P{number} ({pair.get('retrieval_basis', 'retrieval')}):\n"
+            f"{refs[0]} [{left['model']}]: {_span_snippet(left, 240)}\n"
+            f"{refs[1]} [{right['model']}]: {_span_snippet(right, 240)}"
+        )
+    return f"""You are a conservative routing and difference-diagnosis reviewer.
+Do not solve the multiple-choice problem, select an option, decide which source
+is correct, or add facts.  Classify the reasoning shape, then decide whether
+one displayed cross-model pair is a concrete, independently verifiable source
+of disagreement worth sending to a conflict reviewer.
+
+Use `verification_eligible: true` only if exactly one listed pair discusses a
+specific factual, numerical, causal, entity, or condition/scope disagreement
+that can be checked without options.  Different wording, compatible detail,
+missing reasoning, or an open-ended task must be retained as A-pool and use
+false.  If true, copy exactly the two displayed span IDs into `span_refs`.
+`new_claim_label` is used only with claim_category `new`; it is a short
+descriptive label, not a claim of truth.
+
+Question:
+{question}
+
+Program-retrieved candidate pairs:
+{chr(10).join(rendered) or 'None.'}
+
+Return JSON only:
+{{"problem_type":"numeric_calculation|formula_derivation|causal_mechanism|conditional_logic|fact_entity_relation|open_ended","diagnosis_type":"formula_or_calculation_error|fact_or_concept_error|condition_or_scope_mismatch|entity_confusion|evidence_insufficient|no_verifiable_conflict","verification_eligible":true,"span_refs":["M0-S1","M1-S2"],"claim_category":"quantitative_relation|causal_mechanism|conditional_constraint|entity_relation|new","new_claim_label":"none or short proposed category","reason":"brief source-grounded routing reason"}}"""
+
+
+def _diagnosis_state(
+    record: dict[str, Any], pairs: list[dict[str, Any]], parsed: dict[str, Any], raw: str,
+) -> dict[str, Any]:
+    """Validate a diagnostic proposal and make the A-pool fallback explicit."""
+    problem_type = str(parsed.get("problem_type", "")).strip().lower()
+    diagnosis_type = str(parsed.get("diagnosis_type", "")).strip().lower()
+    requested_refs = [str(ref) for ref in parsed.get("span_refs", []) if str(ref).strip()]
+    allowed_pairs = {
+        frozenset(str(ref) for ref in pair.get("span_refs", []))
+        for pair in pairs if len(pair.get("span_refs", [])) == 2
+    }
+    category = str(parsed.get("claim_category", "")).strip().lower()
+    if category not in CLAIM_CATEGORIES:
+        category = _diagnosis_category(problem_type) if problem_type in PROBLEM_TYPES else "new"
+    new_label = _canonical_field(parsed.get("new_claim_label"))
+    if category != "new":
+        new_label = "none"
+    elif new_label == "none":
+        new_label = "unclassified"
+    base = {
+        "diagnosis_id": "D0",
+        "problem_type": problem_type or "unknown",
+        "diagnosis_type": diagnosis_type or "unknown",
+        "claim_category": category,
+        "new_claim_label": new_label,
+        "span_refs": requested_refs,
+        "reason": _trim(parsed.get("reason"), 500),
+        "raw": raw,
+        "candidate_pair_count_seen": len(pairs),
+    }
+    eligible = _truthy_json(parsed.get("verification_eligible"))
+    if problem_type not in PROBLEM_TYPES:
+        return {**base, "status": "RETAIN_A_POOL", "route": "retain_a_pool", "rejection_reason": "invalid_problem_type"}
+    if diagnosis_type not in DIAGNOSIS_TYPES:
+        return {**base, "status": "RETAIN_A_POOL", "route": "retain_a_pool", "rejection_reason": "invalid_diagnosis_type"}
+    if problem_type == "open_ended":
+        return {**base, "status": "RETAIN_A_POOL", "route": "retain_a_pool", "rejection_reason": "open_ended_problem"}
+    if diagnosis_type in {"evidence_insufficient", "no_verifiable_conflict"}:
+        return {**base, "status": "RETAIN_A_POOL", "route": "retain_a_pool", "rejection_reason": "diagnosis_not_verifiable"}
+    if not eligible:
+        return {**base, "status": "RETAIN_A_POOL", "route": "retain_a_pool", "rejection_reason": "diagnosis_did_not_authorize_verification"}
+    if len(requested_refs) != 2 or frozenset(requested_refs) not in allowed_pairs:
+        return {**base, "status": "RETAIN_A_POOL", "route": "retain_a_pool", "rejection_reason": "diagnosis_pair_not_program_retrieved"}
+    spans_by_id = {
+        str(span.get("span_id")): span
+        for span in record.get("swarm_spans", {}).get("spans", [])
+    }
+    source_models = {str(spans_by_id.get(ref, {}).get("model", "")) for ref in requested_refs}
+    if len(source_models) != 2 or any(ref not in spans_by_id for ref in requested_refs):
+        return {**base, "status": "RETAIN_A_POOL", "route": "retain_a_pool", "rejection_reason": "diagnosis_pair_not_cross_model"}
+    return {
+        **base,
+        "status": "ELIGIBLE",
+        "route": "span_first_verify",
+        "source_models": sorted(source_models),
+    }
+
+
+def run_diagnose(args: argparse.Namespace, records: list[dict[str, Any]]) -> None:
+    """Classify reasoning shape and admit at most one auditable pair per item."""
+    for pos, record in enumerate(records, 1):
+        if record.get("swarm_diagnosis", {}).get("status"):
+            continue
+        if _decisive_hard_answer(record):
+            state = {"status": "SKIPPED_HARD", "route": "hard_constraint", "reason": "program-owned hard constraint"}
+        else:
+            spans_by_id = {
+                str(span.get("span_id")): span
+                for span in record.get("swarm_spans", {}).get("spans", [])
+            }
+            pair_state = record.get("swarm_span_candidates", {})
+            all_pairs = pair_state.get("candidate_pairs", []) if pair_state.get("status") == "DONE" else []
+            # Keep the classifier context below the vLLM context limit.  The
+            # selected pair is then the *only* pair offered to the localizer.
+            shown_pairs = all_pairs[:12]
+            if not shown_pairs:
+                state = {
+                    "status": "RETAIN_A_POOL", "route": "retain_a_pool",
+                    "reason": "no program-retrieved cross-model span pair",
+                    "rejection_reason": "no_span_candidate_pair",
+                    "candidate_pair_count_seen": 0,
+                }
+            else:
+                raw, parsed = _call_json(
+                    args.model, _diagnosis_prompt(record["question"], spans_by_id, shown_pairs),
+                    460, ("problem_type", "diagnosis_type", "verification_eligible"), 7400 + pos,
+                )
+                state = _diagnosis_state(record, shown_pairs, parsed, raw)
+        record["swarm_diagnosis"] = state
+        _save_json(args.out, records)
+        print(
+            f"[diagnose] {pos}/{len(records)} idx={record['idx']} "
+            f"status={state['status']} type={state.get('problem_type', 'n/a')}",
+            flush=True,
+        )
+
+
 def _span_snippet(span: dict[str, Any], limit: int = 300) -> str:
     """Render a display-only prefix; stored offsets always retain full text."""
     return _trim(span.get("text", ""), limit)
 
 
-def _span_localize_prompt(question: str, spans_by_id: dict[str, dict[str, Any]], pairs: list[dict[str, Any]]) -> str:
+def _span_localize_prompt(
+    question: str, spans_by_id: dict[str, dict[str, Any]], pairs: list[dict[str, Any]],
+    diagnosis: dict[str, Any] | None = None,
+) -> str:
     rendered: list[str] = []
     for number, pair in enumerate(pairs, 1):
         refs = [str(ref) for ref in pair.get("span_refs", [])]
@@ -558,9 +734,21 @@ def _span_localize_prompt(question: str, spans_by_id: dict[str, dict[str, Any]],
             f"{refs[0]} [{left['model']}]: {_span_snippet(left)}\n"
             f"{refs[1]} [{right['model']}]: {_span_snippet(right)}"
         )
+    problem_type = str((diagnosis or {}).get("problem_type", "unknown"))
+    category = str((diagnosis or {}).get("claim_category", "unknown"))
+    route_hint = {
+        "numeric_calculation": "Compare the exact numerical quantities, units, and calculation result.",
+        "formula_derivation": "Compare the formula applicability, algebraic relation, or derivation condition.",
+        "causal_mechanism": "Compare the stated mechanism or causal direction under the stated conditions.",
+        "conditional_logic": "Compare the condition, scope, necessity, or exception before comparing conclusions.",
+        "fact_entity_relation": "Compare the entity identity, property, or relation explicitly asserted by the spans.",
+    }.get(problem_type, "Use only the exact entity, attribute, and conditions supported by the spans.")
     return f"""You are a conservative cross-chain contradiction reviewer.  The source
 spans below are immutable evidence: do not quote text not present in them, do
 not solve the multiple-choice question, and do not choose an answer option.
+
+Upstream routing (an audit hint, not evidence): problem_type={problem_type};
+claim_category={category}. {route_hint}
 
 For one listed pair only, return CONFLICT only when both spans discuss the same
 entity and attribute under compatible stated conditions and their propositions
@@ -727,12 +915,28 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
             record["swarm_conflict"] = {"status": "SKIPPED_HARD"}
             record["qae_plan"] = []
         else:
+            diagnosis = record.get("swarm_diagnosis", {})
+            if args.diagnosis_gate and diagnosis.get("status") != "ELIGIBLE":
+                record["swarm_conflict"] = {
+                    "status": "SKIPPED_DIAGNOSIS",
+                    "span_refs": [],
+                    "diagnosis_id": diagnosis.get("diagnosis_id", "D0"),
+                    "diagnosis_status": diagnosis.get("status", "MISSING"),
+                    "rejection_reason": diagnosis.get("rejection_reason", "diagnosis_gate_requires_eligible_pair"),
+                }
+                record["qae_plan"] = []
+                _save_json(args.out, records)
+                print(f"[span-localize] {pos}/{len(records)} idx={record['idx']} status=SKIPPED_DIAGNOSIS", flush=True)
+                continue
             spans_by_id = {
                 str(span.get("span_id")): span
                 for span in record.get("swarm_spans", {}).get("spans", [])
             }
             pair_state = record.get("swarm_span_candidates", {})
             pairs = pair_state.get("candidate_pairs", []) if pair_state.get("status") == "DONE" else []
+            if args.diagnosis_gate:
+                selected_refs = frozenset(str(ref) for ref in diagnosis.get("span_refs", []))
+                pairs = [pair for pair in pairs if frozenset(str(ref) for ref in pair.get("span_refs", [])) == selected_refs]
             allowed_pairs = {
                 frozenset(str(ref) for ref in pair.get("span_refs", []))
                 for pair in pairs
@@ -747,7 +951,10 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                 record["qae_plan"] = []
             else:
                 raw, parsed = _call_json(
-                    args.model, _span_localize_prompt(record["question"], spans_by_id, pairs),
+                    args.model, _span_localize_prompt(
+                        record["question"], spans_by_id, pairs,
+                        diagnosis if args.diagnosis_gate else None,
+                    ),
                     700, ("status",), 7600 + pos,
                 )
                 refs = [str(ref) for ref in parsed.get("span_refs", []) if str(ref) in spans_by_id]
@@ -782,6 +989,7 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                         "entity_anchors": entity_anchors, "attribute_anchors": attribute_anchors,
                         "condition_anchors": condition_anchors, "entity_grounded": entity_grounded,
                         "attribute_grounded": attribute_grounded, "conditions_grounded": conditions_grounded,
+                        "entity_resolved": _subject_is_resolved(entity),
                         "left_direction": _canonical_direction(value.get("left_direction")),
                         "right_direction": _canonical_direction(value.get("right_direction")),
                     }
@@ -801,6 +1009,7 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                     and _truthy_json(parsed.get("same_entity"))
                     and _truthy_json(parsed.get("same_conditions"))
                     and fields["entity"] not in {"none", "unknown"}
+                    and (not args.coreference_gate or fields["entity_resolved"])
                     and fields["entity_grounded"]
                     and _span_directions_incompatible(
                         fields["left_direction"], fields["right_direction"],
@@ -842,6 +1051,7 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                     and _truthy_json(parsed.get("same_conditions"))
                     and entity not in {"none", "unknown"}
                     and attribute not in {"none", "unknown"}
+                    and (not args.coreference_gate or fields["entity_resolved"])
                     and left_direction != "unknown"
                     and right_direction != "unknown"
                     and _span_directions_incompatible(
@@ -876,12 +1086,19 @@ def run_span_localize(args: argparse.Namespace, records: list[dict[str, Any]]) -
                         "claim_refs": refs, "conflict_type": ctype, "description": _trim(parsed.get("description"), 500),
                         "why_decisive": _trim(parsed.get("why_decisive"), 450), "target_question": target,
                         "verification_route": route, "source_models": sorted(source_models),
+                        "diagnosis_id": diagnosis.get("diagnosis_id", "D0") if args.diagnosis_gate else None,
+                        "problem_type": diagnosis.get("problem_type", "unknown") if args.diagnosis_gate else "unknown",
+                        "diagnosis_type": diagnosis.get("diagnosis_type", "unknown") if args.diagnosis_gate else "unknown",
+                        "claim_category": diagnosis.get("claim_category", "unknown") if args.diagnosis_gate else "unknown",
+                        "claim_category_version": "diagnostic-routing-v1" if args.diagnosis_gate else None,
+                        "new_claim_label": diagnosis.get("new_claim_label", "none") if args.diagnosis_gate else "none",
                         "structured_claims": structured_claims, "raw": raw,
                     }
                     record["qae_plan"] = [{
                         "evidence_id": "D1-E1", "type": route, "question": target,
                         "why": f"Span-localized {ctype} conflict D1 over {', '.join(refs)}",
                         "origin": "span_hybrid_localized_conflict", "conflict_id": "D1", "claim_refs": refs,
+                        "diagnosis_id": diagnosis.get("diagnosis_id", "D0") if args.diagnosis_gate else None,
                         "answers": {}, "status": "PENDING",
                     }]
                 else:
@@ -1637,6 +1854,21 @@ def _localized_summary(args: argparse.Namespace, records: list[dict[str, Any]]) 
         record.get("swarm_normalization", {}).get("status") == "PARTIAL_NORMALIZATION"
         for record in records
     )
+    diagnosis_states = Counter(record.get("swarm_diagnosis", {}).get("status", "MISSING") for record in records)
+    diagnosis_problem_types = Counter(
+        record.get("swarm_diagnosis", {}).get("problem_type", "unknown")
+        for record in records if record.get("swarm_diagnosis", {}).get("status") == "ELIGIBLE"
+    )
+    diagnosis_error_types = Counter(
+        record.get("swarm_diagnosis", {}).get("diagnosis_type", "unknown")
+        for record in records if record.get("swarm_diagnosis", {}).get("status") == "ELIGIBLE"
+    )
+    new_claim_labels = Counter(
+        record.get("swarm_diagnosis", {}).get("new_claim_label", "")
+        for record in records
+        if record.get("swarm_diagnosis", {}).get("status") == "ELIGIBLE"
+        and record.get("swarm_diagnosis", {}).get("claim_category") == "new"
+    )
     admitted = {item.get("idx") for item in records if item.get("swarm_guard", {}).get("status") == "ADMITTED"}
     changed = [item for item in records if item.get("qae_final_answer") != item.get("stored_goa_answer")]
     summary["conflict_localization"] = {
@@ -1659,12 +1891,23 @@ def _localized_summary(args: argparse.Namespace, records: list[dict[str, Any]]) 
             "candidate_pair_count": len(candidate_pairs),
             "records_with_candidate_pair": sum(bool(record.get("swarm_normalization", {}).get("candidate_pairs")) for record in records),
         },
+        "diagnosis": {
+            "enabled": args.diagnosis_gate,
+            "status": dict(diagnosis_states),
+            "eligible_record_count": diagnosis_states["ELIGIBLE"],
+            "retained_a_pool_record_count": diagnosis_states["RETAIN_A_POOL"],
+            "eligible_problem_types": dict(diagnosis_problem_types),
+            "eligible_diagnosis_types": dict(diagnosis_error_types),
+            "new_claim_labels": {label: count for label, count in new_claim_labels.items() if label},
+            "note": "A non-eligible diagnosis is an explicit retain-A-pool route, not a negative claim about all source reasoning.",
+        },
     }
     summary["gate_config"] = {
         "coreference_gate": args.coreference_gate,
         "field_span_gate": args.field_span_gate,
         "hbr_dedup": args.hbr_dedup,
         "grounded_normalization": args.grounded_normalization,
+        "diagnosis_gate": args.diagnosis_gate,
     }
     if args.span_hybrid:
         raw_spans = [span for record in records for span in record.get("swarm_spans", {}).get("spans", [])]
@@ -1697,7 +1940,7 @@ def _localized_summary(args: argparse.Namespace, records: list[dict[str, Any]]) 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--stage", required=True, choices=("hard", "claims", "spans", "span_candidates", "normalize", "localize", "verify", "ledger", "guard", "clean", "rebuttal", "pool", "summary"))
+    parser.add_argument("--stage", required=True, choices=("hard", "claims", "spans", "span_candidates", "diagnose", "normalize", "localize", "verify", "ledger", "guard", "clean", "rebuttal", "pool", "summary"))
     parser.add_argument("--model", choices=PARTICIPANTS, default="qwen")
     parser.add_argument("--source", default="outputs/qae_pooling_full_source_hard_v2.json")
     parser.add_argument("--out", default="outputs/qae_localized_disagreement_40.json")
@@ -1710,6 +1953,7 @@ def main() -> None:
     parser.add_argument("--grounded-normalization", action="store_true", help="require exact source spans for normalized subject, predicate, and value")
     parser.add_argument("--compatible-d1", action="store_true", help="retrieve compatible subject/predicate pairs when one side leaves conditions unspecified")
     parser.add_argument("--span-hybrid", action="store_true", help="use lossless source spans and selective cross-model conflict materialization instead of full claim extraction")
+    parser.add_argument("--diagnosis-gate", action="store_true", help="require a typed, source-pair-grounded diagnosis before span conflict localization")
     parser.add_argument("--span-candidate-limit", type=int, default=24, help="maximum program-retrieved cross-model span pairs per answer-disagreement record")
     parser.add_argument("--no-coreference-gate", dest="coreference_gate", action="store_false", help="ablation: permit standalone pronoun/article subjects")
     parser.add_argument("--no-field-span-gate", dest="field_span_gate", action="store_false", help="ablation: require exact spans but not field/span consistency")
@@ -1721,6 +1965,7 @@ def main() -> None:
     elif args.stage == "claims": run_claims(args, records)
     elif args.stage == "spans": run_spans(args, records)
     elif args.stage == "span_candidates": run_span_candidates(args, records)
+    elif args.stage == "diagnose": run_diagnose(args, records)
     elif args.stage == "normalize": run_normalize(args, records)
     elif args.stage == "localize": run_span_localize(args, records) if args.span_hybrid else run_localize(args, records)
     elif args.stage == "verify": run_span_verify(args, records) if args.span_hybrid else run_verify(args, records)

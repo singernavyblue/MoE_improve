@@ -20,6 +20,8 @@ PREFIX=${PREFIX:-outputs/qae_span_hybrid_198}
 OUT=${OUT:-${PREFIX}.json}
 SUMMARY=${SUMMARY:-${PREFIX}_summary.json}
 LIMIT=${LIMIT:-0}
+ONLY_DISAGREEMENT=${ONLY_DISAGREEMENT:-1}
+DIAGNOSIS_GATE=${DIAGNOSIS_GATE:-1}
 QWEN_MODEL=${QWEN_MODEL:-/root/autodl-tmp/hf/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28}
 MATHSTRAL_MODEL=${MATHSTRAL_MODEL:-/root/autodl-tmp/hf/hub/models--mistralai--Mathstral-7B-v0.1/snapshots/ec3a48484ef241dfe03282edcb0f25e564923823}
 BIOMISTRAL_MODEL=${BIOMISTRAL_MODEL:-/root/autodl-tmp/hf/hub/models--BioMistral--BioMistral-7B/snapshots/9a11e1ffa817c211cbb52ee1fb312dc6b61b40a5}
@@ -61,17 +63,30 @@ start_server() {
 
 run_stage() {
   local stage=$1 model=$2
-  "$PYTHON" "$RUNNER" --stage "$stage" --model "$model" \
-    --source "$SOURCE" --out "$OUT" --summary "$SUMMARY" --limit "$LIMIT" \
+  local -a stage_args=(
+    --stage "$stage" --model "$model"
+    --source "$SOURCE" --out "$OUT" --summary "$SUMMARY" --limit "$LIMIT"
     --span-hybrid --span-candidate-limit "$SPAN_CANDIDATE_LIMIT"
+  )
+  if [[ "$ONLY_DISAGREEMENT" == "1" ]]; then
+    stage_args+=(--only-disagreement)
+  fi
+  if [[ "$DIAGNOSIS_GATE" == "1" ]]; then
+    stage_args+=(--diagnosis-gate)
+  fi
+  "$PYTHON" "$RUNNER" "${stage_args[@]}"
 }
 
 # The first three stages are fully program-owned and do not require vLLM.
 run_stage hard qwen
 run_stage spans qwen
 run_stage span_candidates qwen
-
-start_server "$QWEN_MODEL" Qwen/Qwen2.5-7B-Instruct
+if [[ "$DIAGNOSIS_GATE" == "1" ]]; then
+  start_server "$QWEN_MODEL" Qwen/Qwen2.5-7B-Instruct
+  run_stage diagnose qwen
+else
+  start_server "$QWEN_MODEL" Qwen/Qwen2.5-7B-Instruct
+fi
 run_stage localize qwen
 for spec in \
   "qwen:$QWEN_MODEL:Qwen/Qwen2.5-7B-Instruct" \

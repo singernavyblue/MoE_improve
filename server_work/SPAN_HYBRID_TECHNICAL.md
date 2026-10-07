@@ -18,14 +18,16 @@ flowchart LR
   B --> C{初始答案是否分歧?}
   C -- 否 --> X[不建立冲突候选]
   C -- 是 --> D[程序检索跨模型 span 对]
-  D --> E[模型仅判定已列 span 对]
-  E --> F{严格结构与证据门}
-  F -- 拒绝 --> X
-  F -- 通过 --> G[构造 D1 冲突与盲验证问题]
-  G --> H[三模型独立盲验证]
-  H --> I[证据账本与直接性审查]
-  I -- DIRECT --> J[可约束安全 pool]
-  I -- 非 DIRECT --> K[保留 A-pool]
+  D --> E[D0 题型分类与差异归因]
+  E -- 不可验证 --> K[显式保留 A-pool]
+  E -- 可验证的一对 span --> F[模型仅判定已列 span 对]
+  F --> G{严格结构与证据门}
+  G -- 拒绝 --> X
+  G -- 通过 --> H[构造 D1 冲突与盲验证问题]
+  H --> I[三模型独立盲验证]
+  I --> J[证据账本与直接性审查]
+  J -- DIRECT --> L[可约束安全 pool]
+  J -- 非 DIRECT --> K
 ~~~
 
 核心原则：**程序拥有来源与候选空间，模型只做受限的语义判断；没有通过门控的内容不能成为证据，也不能改写答案。**
@@ -76,6 +78,7 @@ gold 只用于离线评估，任何提示词和决策阶段均不读取它。
 |---|---|---|
 | swarm_spans | spans | 程序生成的、带原始字符 offset 的完整 span 账本 |
 | swarm_span_candidates | span_candidates | 只含跨模型 span ID 对的可审计检索结果 |
+| swarm_diagnosis | diagnose | D0 的题型、差异归因、可验证性和唯一允许进入定位的 span 对 |
 | swarm_conflict | localize | 拒绝原因或通过严格验证的唯一 D1 冲突 |
 | qae_plan | localize | 只有已通过冲突门时才写入 D1-E1 盲验证任务 |
 | qae_ledger | verify / ledger | 多模型盲验证答案及其归一化证据等级 |
@@ -141,7 +144,18 @@ score = 共享词 lexical score + 稀有共享 token 的加权 + 数字/公式/�
 
 检索器按模型对均衡取样，默认每题最多 24 对。若一个模型对没有任何词面/符号重叠，会保留极少量 fallback_information_dense_cross_model_pair；该 fallback 仅防止漏召回，绝不等价于冲突。
 
-### 4.4 localize：受限冲突判断与 Claim 物化
+### 4.4 diagnose：题型分类与差异归因门
+
+`diagnose` 只看原题和最多 12 个程序检索出的 span 对，不看选项字母、A-pool 或 gold。它输出：
+
+- `problem_type`：数值计算、公式推导、因果机制、条件逻辑、实体关系或开放题；
+- `diagnosis_type`：概念/事实、条件范围、实体混淆、公式/计算、证据不足或无可验证冲突；
+- `claim_category`：四个初始类别或 `new`；新类别会保留 `new_claim_label`，进入后续归并队列；
+- `verification_eligible` 与一对精确 `span_refs`。
+
+程序只接受来自已展示、跨模型 candidate pair 的两条 ref。开放题、证据不足、未授权或格式无效的诊断一律写成 `RETAIN_A_POOL`；这不是“所有推理均无冲突”的负面结论，而是禁止以不足证据干预答案。启用 `--diagnosis-gate` 后，D0 未为 `ELIGIBLE` 的记录不会调用定位器、验证器或 pooler 的干预分支。
+
+### 4.5 localize：受限冲突判断与 Claim 物化
 
 定位模型只看到：
 
@@ -166,7 +180,7 @@ score = 共享词 lexical score + 稀有共享 token 的加权 + 数字/公式/�
 
 当候选已是跨模型、已检索、同实体同条件且方向确实相反，但模型遗漏属性/条件锚点时，系统可发起**一次**字段修复调用。修复调用只能补 entity、attribute、conditions 的精确锚点和 route，不能改变 span 对、冲突结论、来源模型或方向。这避免第二次调用重新发明更方便的冲突。
 
-### 4.5 字段、公式和方向门
+### 4.6 字段、公式和方向门
 
 _field_matches_span 支持三种证据匹配：
 
@@ -191,13 +205,13 @@ _field_matches_span 支持三种证据匹配：
 | formula | symbolic |
 | definition / comparison | fact |
 
-### 4.6 verify：盲验证
+### 4.7 verify：盲验证
 
 对每个 D1-E1，Qwen、Mathstral、BioMistral 独立回答同一事实/数值问题。提示中不含选项字母、A-pool、任一原始推理链或其他验证器的答案。
 
 run_span_verify 使用 vLLM 的 /v1/chat/completions，并用 _VLLM_SERVED_MODELS 映射本地 server 的 served model name。无效 JSON 或 HTTP 失败写成 UNKNOWN，不能生成正面证据。
 
-### 4.7 ledger、guard 和安全池化
+### 4.8 ledger、guard 和安全池化
 
 ledger 仅在至少两路具体答案语义一致时给 STRONG。随后 guard 检查该结论是否**直接**区分 D1 的两侧主张：
 
@@ -214,9 +228,7 @@ ledger 仅在至少两路具体答案语义一致时给 STRONG。随后 guard �
 
 - --no-coreference-gate、--no-field-span-gate、--no-hbr-dedup 是旧 Claim-normalization 路径的消融开关；
 - span-first 路径使用自己的精确锚点、跨模型 pair、条件与方向门；
-- 当前 span-first 路径通过 prompt 禁止 they/a 等歧义实体，但 _subject_is_resolved 的程序级指代检查尚未接入 run_span_localize。
-
-最后一点应视为已知缺口：若要让“指代消解”在 span-first 路径也成为硬门，应在 valid 与 recovery_eligible 中显式检查解析出的 entity。
+- span-first 路径已经在 `valid` 与一次字段修复的资格检查中接入 `_subject_is_resolved`；`they`、`a`、`it` 等不能唯一指向实体的字段会被拒绝。
 
 ## 6. 运行方式
 
@@ -234,7 +246,8 @@ bash run_qae_span_hybrid.sh
 
 ~~~text
 hard → spans → span_candidates
-→ localize(Qwen)
+→ diagnose(Qwen, D0)
+→ localize(Qwen, 仅 D0 授权的 pair)
 → verify(Qwen, Mathstral, BioMistral)
 → ledger → guard → clean → rebuttal → pool → summary
 ~~~
@@ -274,6 +287,7 @@ summary 的 span_hybrid 段包含：
 
 同时应联合查看：
 
+- diagnosis 的 `ELIGIBLE / RETAIN_A_POOL` 比例、题型和归因分布、`new_claim_labels`；
 - conflict_localization.conflict_status：拒绝与接受比例；
 - directness_guard：有多少强验证证据被授权进入池化；
 - changed_with_admitted_direct_evidence：所有答案变更是否都有直接证据；
@@ -304,8 +318,8 @@ summary 的 span_hybrid 段包含：
 
 ## 9. 已知限制与后续工作
 
-1. **span-first 指代门尚未程序化接线。** 应复用 _subject_is_resolved，拒绝单独的 they/a/it 等 entity。
-2. **BioMistral 的不完整 JSON 只会降级为 UNKNOWN。** 可通过 JSON schema、constrained decoding 或更稳健的尾部闭合修复改善可用率。
-3. **模型切换要验证模型身份。** 运行器当前以 /v1/models 的端口可用性作为就绪信号；更稳妥的实现应确认返回 ID 等于将使用的 served model，避免切换瞬间误连旧 server。
-4. **验证事实未必能映射到唯一选项。** 不应靠放宽 guard 解决；应增强“证据只排除特定选项”的部分约束映射，并继续禁止由单条事实直接猜最终选项。
-5. **召回率没有完整标注。** 当前 10 题证明门控精度与安全回退，不足以估计真实冲突召回；后续应人工标注一批答案分歧题的 span-level conflict gold set。
+1. **BioMistral 的不完整 JSON 只会降级为 UNKNOWN。** 可通过 JSON schema、constrained decoding 或更稳健的尾部闭合修复改善可用率。
+2. **模型切换要验证模型身份。** 运行器当前以 /v1/models 的端口可用性作为就绪信号；更稳妥的实现应确认返回 ID 等于将使用的 served model，避免切换瞬间误连旧 server。
+3. **验证事实未必能映射到唯一选项。** 不应靠放宽 guard 解决；应增强“证据只排除特定选项”的部分约束映射，并继续禁止由单条事实直接猜最终选项。
+4. **诊断精度与冲突召回率没有人工 gold set。** 当前 10 题仅证明旧门控精度与安全回退；新 D0 需要在 20--50 道人工审计题上报告题型/归因一致性、错误放行和漏放行。
+5. **动态类别尚未自动合并。** `new_claim_label` 先进入审计队列；合并为稳定类别需要人工或独立的离线归并实验。
