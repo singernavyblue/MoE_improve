@@ -1020,6 +1020,142 @@ symbolic_bonus = min(0.8, 0.2 × |数字／LaTeX／希腊字母交集|)</pre>
   <p>切分只保证"确定、可回查、不丢字"；配对只保证"高召回、跨模型、配额均衡、结果可解释"。这两层都<strong>不做任何语义裁决</strong>。裁决权从 span 阶段到诊断门、再到冲突硬门，是一路收紧的——而每一次收紧都在减少进入判断的候选数，这正是当前召回瓶颈的所在。</p>
 </div>
 
+<h2>附录 G · 配对规则的白话版（一个小例子跑通）</h2>
+
+<p>附录 F 的第三条规则是整套流程里最容易被误读的一步。本附录用一道<strong>自编题</strong>（真实产物里没有）把它讲成大白话，并把每一步的真实计算结果贴出来。三份作答都用英文，因为真实产物是英文的，分词器也只对英文按预期工作。</p>
+
+<h3>G.1 场景</h3>
+
+<p>题目：<em>关于酶 E 的催化活性随温度的变化，下列哪项正确？</em>（A）单调上升　（B）单调下降　（C）先升后降，存在最适温度　（D）不随温度变化。<strong>正确答案是 C。</strong></p>
+
+<p>三个模型各写了一段推理链，每条链被切成若干 span（含一个直答字段）：</p>
+
+<table>
+  <tr><th style="width:60px">链</th><th>可用 span（编号即 span_id）</th><th style="width:80px">答案</th></tr>
+  <tr>
+    <td>M0</td>
+    <td>S1 <code>Higher temperature gives substrate molecules more kinetic energy.</code><br>
+        S2 <code>More collisions therefore mean a faster reaction rate.</code><br>
+        S3 <code>The activity of the enzyme rises with temperature.</code><br>
+        S4 <code>There is no optimum temperature for enzyme E.</code><br>
+        <span style="color:var(--ink3)">S5 <code>The answer is A.</code> ← 直答字段，被剔除</span></td>
+    <td><strong>A</strong></td>
+  </tr>
+  <tr>
+    <td>M1</td>
+    <td>S1 <code>Enzyme E has an optimum temperature.</code>　S2 <code>The activity is highest at that optimum temperature.</code><br>
+        S3 <code>Above the optimum the activity decreases sharply.</code>　S4 <code>The enzyme unfolds and loses its shape above the optimum.</code><br>
+        S5 <code>Below the optimum the activity is lower as well.</code></td>
+    <td><strong>C</strong></td>
+  </tr>
+  <tr>
+    <td>M2</td>
+    <td>S1 <code>Enzymes are proteins.</code>　S2 <code>High temperature denatures proteins.</code><br>
+        S3 <code>The activity of enzyme E drops as the temperature rises.</code><br>
+        <span style="color:var(--ink3)">S4 <code>The answer is B.</code> ← 直答字段，被剔除</span></td>
+    <td><strong>B</strong></td>
+  </tr>
+</table>
+
+<p>切分后共 14 个 span，<strong>剔除 2 个</strong>（都是直答字段，长度都不足 18 字符），剩 <strong>12 个可用 span</strong>：M0 有 4 个、M1 有 5 个、M2 有 3 个。下面每一步都在这个规模上发生。</p>
+
+<h3>G.2 六条规则的白话版</h3>
+
+<div class="card blue">
+  <div class="lbl">规则一 · 只查有分歧的题</div>
+  <p><strong>比喻</strong>：会议只讨论有争议的提案。三个人意见一致时，不需要任何人去找论据。<br>
+  <strong>实现</strong>：<code>_source_has_disagreement</code> 要求三份答案里出现 ≥2 个不同选项；否则整题记 <code>SKIPPED_NO_ANSWER_DISAGREEMENT</code>——不配对，一次模型调用都不发生。</p>
+</div>
+
+<div class="card blue">
+  <div class="lbl">规则二 · 只在「不同模型」之间配对</div>
+  <p><strong>比喻</strong>：同一个人前后两次发言不算分歧，只有两个人之间才算。同一条链内部本来就会自我修正（先说"高温活性高"，后面又补一句"但过热会变性"），那不是需要融合解决的分歧。<br>
+  <strong>实现</strong>：可用 span 先按 model 分桶，只在桶与桶之间配对；模型数少于 2 直接返回空。本例里有 M0／M1／M2 三个桶，两两组合出 <strong>3 个模型对</strong>。</p>
+</div>
+
+<div class="card amber">
+  <div class="lbl">规则三 · 打分是「找相似」，不是「找矛盾」——这是最容易被误解的一条</div>
+  <p><strong>比喻</strong>：这一步相当于图书管理员按关键词把相关的两页纸抽出来放在一起，他<strong>不判断</strong>这两页是互相支持还是互相打脸。判断是下一步模型的事。<br>
+  <strong>实现</strong>：把每句话切成内容词（去停用词、去词尾：<code>molecules → molecul</code>、<code>rises → rise</code>、<code>denatures → denatur</code>），再加上方向标记（含 <code>increase</code>／<code>decrease</code> 等词就补一个方向 token），然后算三项之和：</p>
+  <pre>总分 = 词面重叠 + 稀有词权重 + 数字公式加成
+  词面重叠 = |共有词| / √(|左词数| × |右词数|)
+  稀有词权重 = Σ 1/df(词)，df = 这个词在本题的可用 span 里出现过几次
+  数字公式加成 = min(0.8, 0.2 × 共有数字／LaTeX／希腊字母的个数)</pre>
+  <p>只要<strong>共有一个内容词</strong>就算候选（score &gt; 0）。本例 M0↔M1 之间 4×5=20 种组合里有 <strong>12 对</strong>越过这条线，M0↔M2 有 6 对，M1↔M2 有 7 对。门槛之所以这么松，是因为这一步宁可多召回也不能漏。</p>
+</div>
+
+<div class="card teal">
+  <div class="lbl">规则四 · 名额按「模型对」发，不按分数排队</div>
+  <p><strong>比喻</strong>：不是把所有候选按分数排一排，取前 24 名；而是<strong>每两个模型之间固定分几个发言名额</strong>。这样才不会出现"用词最像的那一对把话筒占满、第三家一次都没被问过"。<br>
+  <strong>实现</strong>：<code>per_group = max(2, 24 ÷ 模型对数)</code>。3 个模型 → 3 个模型对 → <strong>每对 8 个名额</strong>；2 个模型 → 每对 24 个。桶内按分数排序（同分时按 span_id，保证跑两次结果一样），取前 <code>per_group</code> 个。本例 M0↔M1 的 12 对里只有 8 对入选，挤掉 4 对。</p>
+</div>
+
+<div class="card teal">
+  <div class="lbl">规则五 · 检索不许自己宣布「没找到就等于没问题」</div>
+  <p><strong>比喻</strong>：如果两个模型一个用中文术语、一个用英文术语，词面上一个字都不重合，程序<strong>不能</strong>因此判成"这两家没冲突"——那只是检索没找到而已。所以它各挑 2 句信息量最大的句子凑成最多 4 对，分数记 0，并打上显式标记，交给模型去否掉。<br>
+  <strong>实现</strong>：<code>retrieval_basis = fallback_information_dense_cross_model_pair</code>。实测构造：假设第四个模型的链写的是 <code>Buffers resist pH change when acid is added.</code> 与 <code>A catalyst provides an alternative pathway.</code>，与 M0 的四个 span 共 8 种组合<strong>全部零分</strong> → 兜底取 M0 侧信息量最大的 S1(9 个词)、S2(7 个词) 与该侧 S1(7)、S2(4) 组成 4 对，全部 score=0。真实十题里这个分支一次都没触发（192 对全是正常重叠）。</p>
+</div>
+
+<div class="card blue">
+  <div class="lbl">规则六 · 排序必须可复现</div>
+  <p>桶内排序键是 <code>(-score, span_id_left, span_id_right)</code>。元组里带上 span_id 看着多余，实际是让<strong>同分时的顺序也唯一确定</strong>——否则同一份数据跑两次可能选出不同的候选，实验就无法比较。</p>
+</div>
+
+<h3>G.3 本例真实计算出的分数</h3>
+
+<p>M0 ↔ M1（12 对争 8 个名额，前 8 保留）：</p>
+<table>
+  <tr><th style="width:80px">分数</th><th>拆解</th><th style="width:140px">候选对</th><th>共有的内容词</th><th style="width:70px">去留</th></tr>
+  <tr><td>1.573</td><td>0.730 + 0.843 + 0</td><td>M0-S4 × M1-S1</td><td>e, enzyme, optimum, temperature</td><td><strong>留</strong></td></tr>
+  <tr><td>0.743</td><td>0.400 + 0.343 + 0</td><td>M0-S3 × M1-S1</td><td>enzyme, temperature</td><td><strong>留</strong></td></tr>
+  <tr><td>0.708</td><td>0.365 + 0.343 + 0</td><td>M0-S3 × M1-S2</td><td>activity, temperature</td><td><strong>留</strong></td></tr>
+  <tr><td>0.675</td><td>0.309 + 0.367 + 0</td><td>M0-S4 × M1-S4</td><td>enzyme, optimum</td><td><strong>留</strong></td></tr>
+  <tr><td>0.643</td><td>0.333 + 0.310 + 0</td><td>M0-S4 × M1-S2</td><td>optimum, temperature</td><td><strong>留</strong></td></tr>
+  <tr><td>0.383</td><td>0.183 + 0.200 + 0</td><td>M0-S3 × M1-S3</td><td>activity</td><td><strong>留</strong></td></tr>
+  <tr><td>0.383</td><td>0.183 + 0.200 + 0</td><td>M0-S3 × M1-S5</td><td>activity</td><td><strong>留</strong></td></tr>
+  <tr><td>0.369</td><td>0.169 + 0.200 + 0</td><td>M0-S3 × M1-S4</td><td>enzyme</td><td><strong>留</strong></td></tr>
+  <tr><td>0.333</td><td>0.167 + 0.167 + 0</td><td>M0-S4 × M1-S3</td><td>optimum</td><td><span style="color:var(--red)">挤掉</span></td></tr>
+  <tr><td>0.333</td><td>0.167 + 0.167 + 0</td><td>M0-S4 × M1-S5</td><td>optimum</td><td><span style="color:var(--red)">挤掉</span></td></tr>
+  <tr><td>0.292</td><td>0.149 + 0.143 + 0</td><td>M0-S1 × M1-S1</td><td>temperature</td><td><span style="color:var(--red)">挤掉</span></td></tr>
+  <tr><td>0.279</td><td>0.136 + 0.143 + 0</td><td>M0-S1 × M1-S2</td><td>temperature</td><td><span style="color:var(--red)">挤掉</span></td></tr>
+</table>
+
+<p>M0 ↔ M2（6 对，名额 8 个，全部保留）里分数最高的一对是 <strong>2.167</strong>：</p>
+
+<table>
+  <tr><th style="width:70px">分数</th><th>左（M0-S3）</th><th>右（M2-S3）</th><th>共有的内容词</th></tr>
+  <tr>
+    <td>2.167</td>
+    <td><code>The activity of the enzyme rises with temperature.</code><br><span style="color:var(--ink3)">活性随温度<strong>上升</strong></span></td>
+    <td><code>The activity of enzyme E drops as the temperature rises.</code><br><span style="color:var(--ink3)">活性随温度<strong>下降</strong></span></td>
+    <td>activity, enzyme, <strong>increase</strong>, <strong>rise</strong>, temperature</td>
+  </tr>
+</table>
+
+<div class="card red">
+  <div class="lbl">这个结果反直觉，但正好说明这一层的性质</div>
+  <p>全场最高分的那一对，恰恰是<strong>互相矛盾</strong>的两句话。原因很朴素：矛盾的两句必然在讲同一件事、用同一批词，所以词面最像。更极端的是，编码"分歧"的那两个方向词 <code>increase</code> 与 <code>rise</code> 也被算进了<strong>共有词</strong>，反过来给这一对加了分（M2-S3 同时含 <code>rises</code> 与 <code>drops</code>，因此它的 token 集合里 increase 与 decrease 两个方向标记都在）。</p>
+  <p>由此可见：<strong>分数高 ≠ 有问题，分数低也 ≠ 没问题</strong>。这正是 <code>_span_pair_score</code> 的 docstring 要写 <em>never a contradiction verdict</em> 的原因，也是为什么"这算不算冲突"必须另设一道硬门，由模型在受约束的条件下判——打分只负责把范围缩小。</p>
+  <p>顺带一个对"否定"无感的例子：<code>There is no optimum temperature for enzyme E.</code> 与 <code>Enzyme E has an optimum temperature.</code> 意思完全相反，却因为共有 4 个词拿到该组最高的 1.573。打分器看不见那个 <code>no</code>。</p>
+</div>
+
+<div class="card amber">
+  <div class="lbl">被挤掉的未必没价值</div>
+  <p>被挤掉的 <code>M0-S4 × M1-S3</code>（"不存在最适温度" vs "超过最适温度后活性下降"）只拿到 0.333，输给了几对"用词更像"的组合。它未必不重要，只是措辞重叠不如别人多。这就是"名额制"的代价：<strong>它保证了公平（每个模型对都有发言权），但代价是措辞朴素的有意义候选会被措辞花哨的挤出局</strong>。真实数据里这个代价更大——idx=2 的三个模型对分别有 51／64／26 对，每对只进 8 个。</p>
+</div>
+
+<h3>G.4 这一层到底在保证什么</h3>
+
+<p>把六条规则合起来看，它只承诺两件事，而且都<strong>不涉及"谁对"</strong>：</p>
+
+<table>
+  <tr><th style="width:120px">承诺</th><th>靠什么实现</th></tr>
+  <tr><td><strong>别漏</strong>（高召回）</td><td>门槛极松（共一个词就入选）、只在跨模型之间配（保住三路证据）、配额平衡（每对模型都有名额）、零重叠兜底（检索不许自己下否定结论）</td></tr>
+  <tr><td><strong>可复现</strong></td><td>纯词面／符号计算、无模型调用、排序键带 span_id 消除同分歧义</td></tr>
+</table>
+
+<p>至于"哪两句真的冲突、冲突的是什么、能不能改答案"，全部留给后面三道闸门（冲突硬门 → 盲验证 → 直接性门）。一句话总结这一层：<strong>它是一台高召回、可解释、可复现的候选筛选机，但不是裁判。</strong></p>
+
 <h2>附录 · 核对方法与数据来源</h2>
 <ul>
   <li><strong>逐题产物：</strong><code>server_work/qae_span_hybrid_focus10_v3_20261007.json</code>（10 条记录）。读取字段 <code>gold</code>、<code>stored_goa_answer</code>、<code>swarm_conflict.status</code>、<code>swarm_guard</code>、<code>qae_ledger</code>、<code>qae_pooler</code>、<code>qae_final_answer</code>、<code>swarm_spans</code>、<code>swarm_span_candidates</code>、<code>swarm_diagnosis</code>。</li>
