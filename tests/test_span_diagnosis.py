@@ -58,11 +58,11 @@ class DiagnosisStateTests(unittest.TestCase):
             self.record,
             self.pairs,
             {
-                "problem_type": "causal_mechanism",
-                "diagnosis_type": "fact_or_concept_error",
+                "problem_type": "causal_mechanism|conditional_logic",
+                "diagnosis_type": "fact_or_concept_error|entity_confusion",
                 "verification_eligible": True,
                 "span_refs": ["M0-S1", "M1-S1"],
-                "claim_category": "causal_mechanism",
+                "claim_category": "causal_mechanism|entity_relation",
                 "new_claim_label": "none",
                 "reason": "The two spans assert opposite receptor activity under ligand binding.",
             },
@@ -70,6 +70,8 @@ class DiagnosisStateTests(unittest.TestCase):
         )
         self.assertEqual(state["status"], "ELIGIBLE")
         self.assertEqual(state["route"], "span_first_verify")
+        self.assertEqual(state["problem_type"], "causal_mechanism")
+        self.assertEqual(state["diagnosis_type"], "fact_or_concept_error")
         self.assertEqual(state["source_models"], ["M0", "M1"])
 
     def test_unretrieved_pair_is_explicitly_retained_in_a_pool(self) -> None:

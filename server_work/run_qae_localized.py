@@ -79,6 +79,16 @@ def _trim(value: Any, limit: int = 1500) -> str:
     return text[:limit]
 
 
+def _controlled_choice(value: Any, allowed: set[str]) -> str:
+    """Accept the first valid enum when a model echoes a ``a|b|c`` schema."""
+    supplied = str(value or "").strip().lower()
+    for part in supplied.split("|"):
+        candidate = part.strip()
+        if candidate in allowed:
+            return candidate
+    return supplied
+
+
 def _source_has_disagreement(record: dict[str, Any]) -> bool:
     answers = {answer for answer in record.get("initial_answers", {}).values() if answer in LETTERS}
     return len(answers) >= 2
@@ -621,14 +631,14 @@ def _diagnosis_state(
     record: dict[str, Any], pairs: list[dict[str, Any]], parsed: dict[str, Any], raw: str,
 ) -> dict[str, Any]:
     """Validate a diagnostic proposal and make the A-pool fallback explicit."""
-    problem_type = str(parsed.get("problem_type", "")).strip().lower()
-    diagnosis_type = str(parsed.get("diagnosis_type", "")).strip().lower()
+    problem_type = _controlled_choice(parsed.get("problem_type"), PROBLEM_TYPES)
+    diagnosis_type = _controlled_choice(parsed.get("diagnosis_type"), DIAGNOSIS_TYPES)
     requested_refs = [str(ref) for ref in parsed.get("span_refs", []) if str(ref).strip()]
     allowed_pairs = {
         frozenset(str(ref) for ref in pair.get("span_refs", []))
         for pair in pairs if len(pair.get("span_refs", [])) == 2
     }
-    category = str(parsed.get("claim_category", "")).strip().lower()
+    category = _controlled_choice(parsed.get("claim_category"), CLAIM_CATEGORIES)
     if category not in CLAIM_CATEGORIES:
         category = _diagnosis_category(problem_type) if problem_type in PROBLEM_TYPES else "new"
     new_label = _canonical_field(parsed.get("new_claim_label"))
