@@ -863,6 +863,163 @@ return len(text) >= 18 and len(_content_tokens(text)) >= 2 # ② ③ 长度与�
   <p><code>changed_with_programmatic_hard_evidence</code> 与 <code>changed_with_any_direct_evidence</code> 把两类改动来源分开，正是此前指出的"无法区分修正来自程序硬约束还是证据授权"这一测量缺口。建议后续实验同时报告这两个数与 <code>retain_A_pool_*</code> 各原因码的计数分布——它们能直接回答"改动是被授权发生的，还是被兜底拦截的"。</p>
 </div>
 
+<h2>附录 F · 为什么这样切分，以及为什么不能直接拿去匹配</h2>
+
+<p>本附录回答两个连在一起的问题：切分为什么只认两条边界、<strong>不做任何句法判断</strong>；以及切出来的片段为什么不能直接拿去配对，而必须经过三层门槛与三层配额。所有数字均由本机复算 <code>qae_span_hybrid_focus10_v3_20261007.json</code> 得出。</p>
+
+<h3>F.1 不做句法判断，是为了守住五条底线</h3>
+
+<table>
+  <tr><th style="width:120px">理由</th><th>具体风险</th><th style="width:190px">依据</th></tr>
+  <tr>
+    <td><strong>可回查</strong></td>
+    <td>这一层的唯一硬指标是 <code>原文[start:end] == span.text</code>（idx=10 实测三条链全部自洽）。任何分词器都会顺手做归一化——弯引号转直引号、空白重排、连字符拆分——一旦重写就无法逐字回原文核对，而"证据"这个词正建立在可回查之上。</td>
+    <td><code>_source_spans</code> 383-424</td>
+  </tr>
+  <tr>
+    <td><strong>失败模式不对称</strong></td>
+    <td>让模型来切，模型会"整理""补全""顺手总结"，于是原文里没有的句子进入流水线——那是幻觉混进证据账本的入口。正则切最坏也只是"切得难看"。</td>
+    <td>docstring 原话：<em>A bad sentence boundary can make a span less convenient for retrieval, but it never loses source text or allows a generated quote to enter the evidence ledger.</em>（386-388）</td>
+  </tr>
+  <tr>
+    <td><strong>职责不能重叠</strong></td>
+    <td>整套架构的分工是"程序拥有来源与候选空间，模型只做受限语义判断"。若切分也交给模型，模型就同时握有"提出候选"与"裁定候选"两种权力，审计链断裂。</td>
+    <td>见附录 D、E</td>
+  </tr>
+  <tr>
+    <td><strong>确定性</strong></td>
+    <td>纯正则、零依赖、零模型调用。若改用 nltk／spaCy，版本升级就会改变切法，实验不可复现。</td>
+    <td>账本字段固定写死 <code>deterministic_sentence_or_line_offsets_v1</code>（438）</td>
+  </tr>
+  <tr>
+    <td><strong>方向保守</strong></td>
+    <td>切歪只丢候选 → 退回 A-pool（安全）；切分若污染 → 错误内容变成证据 → 可能改错答案（危险）。两者代价不对称，所以宁可切糙。</td>
+    <td>与整套"少改但不能乱改"的哲学一致</td>
+  </tr>
+</table>
+
+<p>至于"为什么恰好是这两条边界"：<code>\n+</code> 是因为多步推导与展示公式几乎都用空行分段；零宽后顾 <code>(?&lt;=[.!?])(?=\s)</code> 是为了让句末标点留在<strong>前一个</strong> span 里，切出完整句子而不是把句号单独甩出去。细节见附录 B。</p>
+
+<h3>F.2 配对前的三层门槛（<code>_span_is_retrievable</code>, 455）</h3>
+
+<table>
+  <tr><th style="width:230px">条件</th><th>依据</th><th style="width:110px">十题实测</th></tr>
+  <tr><td><code>is_direct_answer</code> 为真 → 排除</td><td>正则 <code>_DIRECT_ANSWER_RE</code>（368）匹配"答案／选项是 X"这类表述</td><td>砍掉 <strong>26</strong> 个</td></tr>
+  <tr><td><code>len(text.strip()) &lt; 18</code> → 排除</td><td>M0 的残片 <code>' {'</code>、<code>'Step 1'</code> 这类片段既无实体也无属性，配出来的对只有噪声</td><td>砍掉 <strong>27</strong> 个</td></tr>
+  <tr><td><code>len(content_tokens) &lt; 2</code> → 排除</td><td>只剩停用词的片段无法定位任何实体</td><td>砍掉 <strong>0</strong> 个</td></tr>
+  <tr><td colspan="2"><strong>合计：212 → 159 个可检索 span</strong></td><td>存活 <strong>159</strong></td></tr>
+</table>
+
+<p>排除直答字段的理由值得单独说清：如果两条链各写"the answer is B"与"option C is correct"，它们在 <code>answer</code>／<code>option</code> 上高度重叠，一定会被配成高分数候选——可它们承载的信息仅仅是"两个模型选了不同字母"。那是<strong>分歧的复述，不是论据</strong>。允许它进候选，等于让"选项字母不同"本身成为伪证据。注意这些 span <strong>仍然入账</strong>供审计，只是不参与配对。</p>
+
+<h3>F.3 配对本身的三层约束（<code>_span_candidate_pairs</code>, 483）</h3>
+
+<div class="card blue">
+  <div class="lbl">① 前置开关：答案一致的题一对都不配</div>
+  <p><code>_source_has_disagreement</code>（92）要求 <code>initial_answers</code> 里出现 ≥2 个不同选项。否则整题记为 <code>SKIPPED_NO_ANSWER_DISAGREEMENT</code>——不配对，也不发生任何模型调用。</p>
+</div>
+
+<div class="card blue">
+  <div class="lbl">② 只在跨模型之间配对</div>
+  <p>可用 span 先按 <code>model</code> 分桶；模型数少于 2 直接返回空列表。同一条链内部的前后句本来就会自我修正，那不是"需要融合解决的分歧"。配对只发生在不同模型的 span 之间。</p>
+</div>
+
+<div class="card blue">
+  <div class="lbl">③ 打分：三项相加，只有 &gt; 0 才算候选</div>
+  <pre>lexical        = |L ∩ R| / √(|L| · |R|)
+rarity         = Σ<sub>t ∈ L∩R</sub> 1 / df(t)
+symbolic_bonus = min(0.8, 0.2 × |数字／LaTeX／希腊字母交集|)</pre>
+  <p>第一项是余弦式的重叠率，压长片段偏置；第二项让 <code>HBr</code>、<code>ΔE</code>、单位这类稀有锚点压过 <code>therefore</code>／<code>because</code> 这种通用词；第三项保证数字与公式即使措辞不同也能配上。注意 <strong><code>df</code> 是在"该题的可检索 span 集合"内统计的</strong>，是题内频率而非全局——同一个词在不同题得到的稀有度权重不可比，跨题汇总指标时要留意。</p>
+  <p>函数 docstring 直接写明了它的边界：<em>High-recall lexical/symbolic ranking, <strong>never a contradiction verdict</strong>.</em></p>
+</div>
+
+<div class="card blue">
+  <div class="lbl">④ 名额平衡：先按模型对分桶，再全局排序</div>
+  <p><code>per_group = max(2, limit // 模型对数)</code>，<code>limit</code> 默认 24（<code>--span-candidate-limit</code>, 2035）。桶内按 <code>(-score, span_id_left, span_id_right)</code> 排序后取前 <code>per_group</code> 个——元组里带上 span_id 是为了打破同分时的顺序不确定性。最后再全局排序取前 24。</p>
+  <p><strong>为什么不用"全局 top-24"</strong>：若只按分数取全局前 24，某个措辞高度相似的模型对会独占名额，第三家完全不被检查，三路证据退化成两路。代价是<strong>模型越多、每个模型对的名额越少</strong>：3 个模型 → 3 个模型对 → 每对只有 8 个名额；2 个模型 → 每对 24 个。</p>
+</div>
+
+<div class="card teal">
+  <div class="lbl">⑤ 零重叠兜底：不允许检索单方面宣布"无冲突"</div>
+  <p>若某个模型对<strong>完全没有</strong> score &gt; 0 的对，程序会各取"信息密度最高"（<code>content_tokens</code> 最多）的 2 个 span，最多组 4 对，分数记 0、<code>retrieval_basis</code> 标为 <code>fallback_information_dense_cross_model_pair</code>。注释原话：<em>Retrieval cannot safely declare that an absent lexical match means no semantic conflict.</em> 实测该分支<strong>一次都没触发</strong>——192 对全部是 <code>lexical_or_symbolic_span_overlap</code>。</p>
+</div>
+
+<h3>F.4 提示词层的两道截断，以及 v3 实际走的是哪条</h3>
+
+<table>
+  <tr><th style="width:190px">路径</th><th>谁看到多少</th><th style="width:130px">进入模型的量</th></tr>
+  <tr>
+    <td><strong>诊断门关闭</strong><br>（v3 产物走的这条）</td>
+    <td>localizer 一次拿到该题<strong>全部</strong>候选对（最多 24 对），没有二次截断。</td>
+    <td>192 对<strong>全部</strong>被模型看过</td>
+  </tr>
+  <tr>
+    <td><strong>诊断门开启</strong><br>（当前代码默认具备的能力）</td>
+    <td>诊断模型只读 <code>all_pairs[:12]</code>（704，注释写明"为压住 vLLM 上下文"）；诊断选定 1 对后，<code>run_span_localize</code> 把候选列表过滤成那一对（954-961），localizer 拿到的<strong>只有这 1 对</strong>。代码注释原话：<em>The selected pair is then the <strong>only</strong> pair offered to the localizer.</em></td>
+    <td>192 → 108 → <strong>10</strong></td>
+  </tr>
+</table>
+
+<h3>F.5 真实漏斗（10 题合计）</h3>
+
+<table>
+  <tr><th style="width:200px">层</th><th style="width:90px">数量</th><th>说明</th></tr>
+  <tr><td>① 切分</td><td>212</td><td>原始 span 总数</td></tr>
+  <tr><td>② 三层过滤后</td><td>159</td><td>−26 直答 −27 过短</td></tr>
+  <tr><td>③ 跨模型打分 score &gt; 0</td><td>570</td><td>配对是组合，所以数量可以回升</td></tr>
+  <tr><td>④ 名额平衡后存库</td><td>192</td><td><strong>砍掉 378 对（占 66%）</strong></td></tr>
+  <tr><td>⑤ 进入诊断（仅开门时）</td><td>108</td><td>每题前 12 对；<strong>84 对从未被任何模型看过</strong></td></tr>
+  <tr><td>⑥ 进入 localizer（仅开门时）</td><td>10</td><td>每题 1 对</td></tr>
+  <tr><td>⑦ 通过冲突硬门</td><td>1</td><td>idx=10</td></tr>
+</table>
+
+<table>
+  <tr><th>idx</th><th>可用模型</th><th>per_group</th><th>各模型对：score&gt;0 → 保留</th><th>存库</th><th>开门后展示</th></tr>
+  <tr><td>2</td><td>3</td><td>8</td><td>51→8 ｜ 64→8 ｜ 26→8</td><td>24</td><td>12</td></tr>
+  <tr><td>7</td><td>3</td><td>8</td><td>2→2 ｜ 1→1 ｜ 2→2</td><td>5</td><td>5</td></tr>
+  <tr><td>8</td><td>2</td><td>24</td><td>34→24</td><td>24</td><td>12</td></tr>
+  <tr><td>9</td><td>2</td><td>24</td><td>12→12</td><td>12</td><td>12</td></tr>
+  <tr><td>10</td><td>2</td><td>24</td><td>7→7</td><td>7</td><td>7</td></tr>
+  <tr><td>12</td><td>3</td><td>8</td><td>31→8 ｜ 24→8 ｜ 11→8</td><td>24</td><td>12</td></tr>
+  <tr><td>13</td><td>3</td><td>8</td><td>22→8 ｜ 14→8 ｜ 25→8</td><td>24</td><td>12</td></tr>
+  <tr><td>14</td><td>3</td><td>8</td><td>14→8 ｜ 28→8 ｜ 24→8</td><td>24</td><td>12</td></tr>
+  <tr><td>16</td><td>3</td><td>8</td><td>38→8 ｜ 10→8 ｜ 44→8</td><td>24</td><td>12</td></tr>
+  <tr><td>17</td><td>2</td><td>24</td><td>86→24</td><td>24</td><td>12</td></tr>
+  <tr><td colspan="4"><strong>合计</strong></td><td><strong>192</strong></td><td><strong>108</strong></td></tr>
+</table>
+
+<h3>F.6 本附录提出的一处修正与四点新增发现</h3>
+
+<div class="card red">
+  <div class="lbl">修正 · "每题最多 12 对进入模型"需要限定</div>
+  <p>v3 产物的 <code>swarm_diagnosis</code> <strong>10 条全为 <code>null</code></strong>。而 <code>run_span_localize</code> 在诊断门开启、记录里又没有诊断状态时，会整批输出 <code>SKIPPED_DIAGNOSIS</code> 且清空 <code>qae_plan</code>——既然该产物确实产出了冲突（idx=10），它走的必然是<strong>诊断门关闭</strong>的路径。也就是说：<strong>那次实验的 localizer 看到的是全部候选（最多 24 对），12 对截断并未生效。</strong>12 对截断属于"诊断门开启"的路径，而那条路径的截断更狠：localizer 最终只看到诊断选中的那一对。</p>
+</div>
+
+<div class="card blue">
+  <div class="lbl">新增① 真正的大头是名额平衡，不是过滤</div>
+  <p>过滤只砍掉 53 个 span，而名额平衡砍掉 <strong>378 对（570 → 192，66%）</strong>。单题最极端的是 idx=17（86 → 24）与 idx=2（141 → 24）。若要提高关键 span 的召回，先动这一层比动门槛更有效。</p>
+</div>
+
+<div class="card blue">
+  <div class="lbl">新增② 全局 24 上限在常见模型数下是死代码</div>
+  <p><code>n × ⌊24 / n⌋ ≤ 24</code> 恒成立，而 <code>per_group</code> 被 <code>max(2, ·)</code> 抬高只发生在模型对数 &gt; 12（即 <strong>≥6 个模型</strong>）时。因此 2、3、4、5 个模型下 <code>selected[:24]</code> <strong>永远不会截断</strong>。换句话说，"全局上限 24"这个数字在当前的 2–3 模型配置里不起作用，真正的上限是 <code>per_group × 模型对数</code>。</p>
+</div>
+
+<div class="card blue">
+  <div class="lbl">新增③ 打分排序只看重叠度，不看与待判选项的相关性</div>
+  <p>桶内排序键完全是词面／符号分数。一个与"待判选项"高度相关、却与其他链措辞重叠很少的 span 对，会被措辞雷同的对挤出名单。这是召回上限的一个结构性来源。</p>
+</div>
+
+<div class="card amber">
+  <div class="lbl">新增④ 本机无法导入该模块，影响可复现性</div>
+  <p><code>run_qae_localized.py</code> 第 27 行导入 <code>run_qae_pooling</code>，后者导入 <code>run_proco_keyverify</code>，而它第 26 行是 <code>from endpoint import model_endpoint_dict</code>——<strong><code>endpoint.py</code> 在本机不存在</strong>，且 <code>.gitignore</code> 并未排除它。后果是模块级导入即断，任何阶段复跑与测试都必须在带该文件的环境里进行。建议把它改成从环境变量读取（<code>.gitignore</code> 已把 <code>.env.example</code> 列入白名单，说明本就有此打算），否则干净环境无法复现实验。</p>
+</div>
+
+<div class="card teal">
+  <div class="lbl">一句话小结</div>
+  <p>切分只保证"确定、可回查、不丢字"；配对只保证"高召回、跨模型、配额均衡、结果可解释"。这两层都<strong>不做任何语义裁决</strong>。裁决权从 span 阶段到诊断门、再到冲突硬门，是一路收紧的——而每一次收紧都在减少进入判断的候选数，这正是当前召回瓶颈的所在。</p>
+</div>
+
 <h2>附录 · 核对方法与数据来源</h2>
 <ul>
   <li><strong>逐题产物：</strong><code>server_work/qae_span_hybrid_focus10_v3_20261007.json</code>（10 条记录）。读取字段 <code>gold</code>、<code>stored_goa_answer</code>、<code>swarm_conflict.status</code>、<code>swarm_guard</code>、<code>qae_ledger</code>、<code>qae_pooler</code>、<code>qae_final_answer</code>、<code>swarm_spans</code>、<code>swarm_span_candidates</code>、<code>swarm_diagnosis</code>。</li>
