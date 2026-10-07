@@ -1327,7 +1327,12 @@ def _terminal_numeric_result(value: Any) -> float | None:
     contradiction gate.  It is only a narrow escape hatch for equations such
     as ``7.5 + 0.3 = 7.8`` versus ``10^0.3 ≈ 2.0``.
     """
-    text = _normalized_text(value).replace("≈", "~")
+    text = (
+        _normalized_text(value)
+        .replace("≈", "~")
+        .replace("\\approx", "~")
+        .replace("\\simeq", "~")
+    )
     if not re.search(r"(?:=|~|\b(?:equals|is)\b)", text):
         return None
     values = re.findall(r"(?<![a-z])[-+]?\d+(?:\.\d+)?(?![a-z])", text)
@@ -1936,6 +1941,10 @@ def _localized_summary(args: argparse.Namespace, records: list[dict[str, Any]]) 
     )
     admitted = {item.get("idx") for item in records if item.get("swarm_guard", {}).get("status") == "ADMITTED"}
     changed = [item for item in records if item.get("qae_final_answer") != item.get("stored_goa_answer")]
+    hard_changed = {
+        item.get("idx") for item in changed
+        if item.get("qae_final_answer") == _decisive_hard_answer(item)
+    }
     summary["conflict_localization"] = {
         "selection": "frozen records with at least two distinct parseable initial answers" if args.only_disagreement else "source order",
         "claim_count": len(claims), "mean_claims_per_record": len(claims) / len(records) if records else 0,
@@ -1943,6 +1952,10 @@ def _localized_summary(args: argparse.Namespace, records: list[dict[str, Any]]) 
         "admitted_record_indices": sorted(admitted),
         "changed_answers": len(changed),
         "changed_with_admitted_direct_evidence": sum(item.get("idx") in admitted for item in changed),
+        "changed_with_programmatic_hard_evidence": len(hard_changed),
+        "changed_with_any_direct_evidence": sum(
+            item.get("idx") in admitted or item.get("idx") in hard_changed for item in changed
+        ),
         "claim_extraction_mode": "independent_per_model" if args.independent_claims else "joint",
         "d1_candidate_mode": "normalized_programmatic_pairs" if args.normalized_d1 else "all_claims_prompt",
         "normalization": {

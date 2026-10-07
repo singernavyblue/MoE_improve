@@ -109,7 +109,7 @@ class DiagnosisStateTests(unittest.TestCase):
     def test_grounded_numeric_terminal_values_can_be_incompatible(self) -> None:
         self.assertTrue(
             qae._numeric_anchor_results_incompatible(
-                "7.5 + 0.3 = 7.8", "10^{0.3} approximately equals 2.0",
+                "7.5 + 0.3 = 7.8", r"10^{0.3} \approx 2.0",
             )
         )
         self.assertFalse(qae._numeric_anchor_results_incompatible("2.0 = 2.0", "2 = 2"))
